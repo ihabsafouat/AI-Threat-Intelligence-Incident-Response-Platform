@@ -1,7 +1,10 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Union
 from datetime import datetime, timedelta, timezone
 import logging
 import json
+import re
+import hashlib
+from urllib.parse import urlparse
 
 import boto3
 from botocore.exceptions import ClientError
@@ -34,11 +37,458 @@ class DynamoDBService:
         Note: boto3 is synchronous; we call it directly inside this async method.
         """
         try:
-            self._threat_table.put_item(Item=item)
+            # Clean and normalize the data before storage
+            cleaned_item = await self.clean_and_normalize_threat_data(item)
+            self._threat_table.put_item(Item=cleaned_item)
             return True
         except ClientError as e:
             logger.error(f"Failed to store threat data in DynamoDB: {e}")
             return False
+
+    async def store_threat_data_batch(self, items: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Store multiple threat data items with cleaning and normalization.
+        
+        Args:
+            items: List of threat data items to store
+            
+        Returns:
+            dict: Count of successful and failed items
+        """
+        cleaned_items = []
+        failed_items = []
+        
+        for item in items:
+            try:
+                cleaned_item = await self.clean_and_normalize_threat_data(item)
+                cleaned_items.append(cleaned_item)
+            except Exception as e:
+                logger.error(f"Failed to clean item: {e}")
+                failed_items.append(item)
+        
+        # Store cleaned items in batches
+        success_count = 0
+        batch_size = 25  # DynamoDB batch write limit
+        
+        for i in range(0, len(cleaned_items), batch_size):
+            batch = cleaned_items[i:i + batch_size]
+            try:
+                with self._threat_table.batch_writer() as batch_writer:
+                    for item in batch:
+                        batch_writer.put_item(Item=item)
+                        success_count += 1
+            except ClientError as e:
+                logger.error(f"Failed to store batch: {e}")
+                # Move failed items to failed list
+                failed_items.extend(batch)
+                success_count -= len(batch)
+        
+        return {
+            "successful": success_count,
+            "failed": len(failed_items),
+            "total_processed": len(items)
+        }
+
+    # Data Cleaning and Normalization Methods
+
+    async def clean_and_normalize_threat_data(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and normalize incoming threat data for consistent storage.
+        
+        Args:
+            item: Raw threat data item
+            
+        Returns:
+            dict: Cleaned and normalized threat data
+        """
+        try:
+            # Create a copy to avoid modifying the original
+            cleaned_item = item.copy()
+            
+            # Generate unique ID if not present
+            if "id" not in cleaned_item:
+                cleaned_item["id"] = self._generate_threat_id(cleaned_item)
+            
+            # Normalize timestamps
+            cleaned_item = await self._normalize_timestamps(cleaned_item)
+            
+            # Clean and validate IP addresses
+            cleaned_item = await self._clean_ip_addresses(cleaned_item)
+            
+            # Clean and validate URLs
+            cleaned_item = await self._clean_urls(cleaned_item)
+            
+            # Clean and validate domains
+            cleaned_item = await self._clean_domains(cleaned_item)
+            
+            # Clean and validate file hashes
+            cleaned_item = await self._clean_file_hashes(cleaned_item)
+            
+            # Normalize threat types and categories
+            cleaned_item = await self._normalize_threat_types(cleaned_item)
+            
+            # Clean and validate confidence scores
+            cleaned_item = await self._normalize_confidence_scores(cleaned_item)
+            
+            # Add metadata
+            cleaned_item = await self._add_metadata(cleaned_item)
+            
+            # Validate required fields
+            cleaned_item = await self._validate_required_fields(cleaned_item)
+            
+            return cleaned_item
+            
+        except Exception as e:
+            logger.error(f"Error cleaning threat data: {e}")
+            raise
+
+    def _generate_threat_id(self, item: Dict[str, Any]) -> str:
+        """Generate a unique ID for threat data based on content."""
+        # Create a hash from key identifying fields
+        key_fields = [
+            str(item.get("indicator", "")),
+            str(item.get("threat_type", "")),
+            str(item.get("source", "")),
+            str(item.get("first_seen", ""))
+        ]
+        
+        content_hash = hashlib.sha256("|".join(key_fields).encode()).hexdigest()
+        return f"threat_{content_hash[:16]}"
+
+    async def _normalize_timestamps(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize timestamp fields to ISO format."""
+        timestamp_fields = ["first_seen", "last_seen", "created_at", "updated_at", "expires_at"]
+        
+        for field in timestamp_fields:
+            if field in item and item[field]:
+                try:
+                    if isinstance(item[field], str):
+                        # Try to parse various timestamp formats
+                        parsed_time = self._parse_timestamp(item[field])
+                        if parsed_time:
+                            item[field] = parsed_time.isoformat()
+                    elif isinstance(item[field], (int, float)):
+                        # Handle Unix timestamps
+                        item[field] = datetime.fromtimestamp(item[field], tz=timezone.utc).isoformat()
+                except Exception as e:
+                    logger.warning(f"Failed to normalize timestamp for {field}: {e}")
+                    # Set to current time if parsing fails
+                    item[field] = datetime.now(timezone.utc).isoformat()
+        
+        # Add created_at if not present
+        if "created_at" not in item:
+            item["created_at"] = datetime.now(timezone.utc).isoformat()
+        
+        return item
+
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """Parse various timestamp formats."""
+        # Common timestamp formats
+        formats = [
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%Y"
+        ]
+        
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(timestamp_str, fmt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+            except ValueError:
+                continue
+        
+        return None
+
+    async def _clean_ip_addresses(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and validate IP address fields."""
+        ip_fields = ["source_ip", "destination_ip", "ip_address", "indicator"]
+        
+        for field in ip_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], str):
+                    # Clean IP address
+                    cleaned_ip = self._normalize_ip_address(item[field])
+                    if cleaned_ip:
+                        item[field] = cleaned_ip
+                    else:
+                        # Remove invalid IP
+                        del item[field]
+        
+        return item
+
+    def _normalize_ip_address(self, ip_str: str) -> Optional[str]:
+        """Normalize IP address string."""
+        # Remove common prefixes/suffixes
+        ip_str = re.sub(r'^(https?://|ftp://|smtp://)', '', ip_str)
+        ip_str = re.sub(r'[:/].*$', '', ip_str)
+        
+        # IPv4 pattern
+        ipv4_pattern = r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
+        if re.match(ipv4_pattern, ip_str):
+            return ip_str
+        
+        # IPv6 pattern (simplified)
+        ipv6_pattern = r'^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+        if re.match(ipv6_pattern, ip_str):
+            return ip_str
+        
+        return None
+
+    async def _clean_urls(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and validate URL fields."""
+        url_fields = ["url", "indicator", "source_url"]
+        
+        for field in url_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], str):
+                    cleaned_url = self._normalize_url(item[field])
+                    if cleaned_url:
+                        item[field] = cleaned_url
+                    else:
+                        # Remove invalid URL
+                        del item[field]
+        
+        return item
+
+    def _normalize_url(self, url_str: str) -> Optional[str]:
+        """Normalize URL string."""
+        try:
+            # Add scheme if missing
+            if not url_str.startswith(('http://', 'https://', 'ftp://')):
+                url_str = 'https://' + url_str
+            
+            parsed = urlparse(url_str)
+            if parsed.netloc and parsed.scheme:
+                # Normalize to lowercase
+                normalized = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+                if parsed.path:
+                    normalized += parsed.path
+                if parsed.query:
+                    normalized += f"?{parsed.query}"
+                return normalized
+        except Exception:
+            pass
+        
+        return None
+
+    async def _clean_domains(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and validate domain fields."""
+        domain_fields = ["domain", "indicator", "source_domain"]
+        
+        for field in domain_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], str):
+                    cleaned_domain = self._normalize_domain(item[field])
+                    if cleaned_domain:
+                        item[field] = cleaned_domain
+                    else:
+                        # Remove invalid domain
+                        del item[field]
+        
+        return item
+
+    def _normalize_domain(self, domain_str: str) -> Optional[str]:
+        """Normalize domain string."""
+        # Remove protocol and path
+        domain_str = re.sub(r'^(https?://|ftp://)', '', domain_str)
+        domain_str = re.sub(r'[:/].*$', '', domain_str)
+        
+        # Domain pattern
+        domain_pattern = r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+        if re.match(domain_pattern, domain_str):
+            return domain_str.lower()
+        
+        return None
+
+    async def _clean_file_hashes(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and validate file hash fields."""
+        hash_fields = ["file_hash", "md5", "sha1", "sha256", "indicator"]
+        
+        for field in hash_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], str):
+                    cleaned_hash = self._normalize_hash(item[field])
+                    if cleaned_hash:
+                        item[field] = cleaned_hash
+                    else:
+                        # Remove invalid hash
+                        del item[field]
+        
+        return item
+
+    def _normalize_hash(self, hash_str: str) -> Optional[str]:
+        """Normalize hash string."""
+        # Remove common prefixes and whitespace
+        hash_str = re.sub(r'^(md5|sha1|sha256):', '', hash_str.strip())
+        
+        # Hash patterns
+        if re.match(r'^[a-fA-F0-9]{32}$', hash_str):  # MD5
+            return hash_str.lower()
+        elif re.match(r'^[a-fA-F0-9]{40}$', hash_str):  # SHA1
+            return hash_str.lower()
+        elif re.match(r'^[a-fA-F0-9]{64}$', hash_str):  # SHA256
+            return hash_str.lower()
+        
+        return None
+
+    async def _normalize_threat_types(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize threat type and category fields."""
+        if "threat_type" in item and item["threat_type"]:
+            item["threat_type"] = self._standardize_threat_type(item["threat_type"])
+        
+        if "category" in item and item["category"]:
+            item["category"] = self._standardize_category(item["category"])
+        
+        if "severity" in item and item["severity"]:
+            item["severity"] = self._standardize_severity(item["severity"])
+        
+        return item
+
+    def _standardize_threat_type(self, threat_type: str) -> str:
+        """Standardize threat type values."""
+        threat_type = threat_type.lower().strip()
+        
+        # Common threat type mappings
+        type_mappings = {
+            "malware": ["malware", "virus", "trojan", "worm", "ransomware", "spyware"],
+            "phishing": ["phishing", "spearphishing", "whaling"],
+            "apt": ["apt", "advanced persistent threat", "nation state"],
+            "ddos": ["ddos", "dos", "denial of service"],
+            "exploit": ["exploit", "vulnerability", "cve", "zero-day"],
+            "botnet": ["botnet", "zombie", "command and control"],
+            "social_engineering": ["social engineering", "social engineering attack"],
+            "data_theft": ["data theft", "data breach", "exfiltration"],
+            "insider_threat": ["insider threat", "insider attack"],
+            "unknown": ["unknown", "unclassified", "other"]
+        }
+        
+        for standard_type, variations in type_mappings.items():
+            if threat_type in variations or any(var in threat_type for var in variations):
+                return standard_type
+        
+        return threat_type
+
+    def _standardize_category(self, category: str) -> str:
+        """Standardize category values."""
+        category = category.lower().strip()
+        
+        # Common category mappings
+        category_mappings = {
+            "network": ["network", "network security", "network attack"],
+            "endpoint": ["endpoint", "host", "workstation", "server"],
+            "web": ["web", "web application", "web attack", "web security"],
+            "email": ["email", "email security", "email attack"],
+            "mobile": ["mobile", "mobile device", "mobile security"],
+            "cloud": ["cloud", "cloud security", "saas", "iaas"],
+            "iot": ["iot", "internet of things", "smart device"],
+            "supply_chain": ["supply chain", "third party", "vendor"],
+            "unknown": ["unknown", "unclassified", "other"]
+        }
+        
+        for standard_category, variations in category_mappings.items():
+            if category in variations or any(var in category for var in variations):
+                return standard_category
+        
+        return category
+
+    def _standardize_severity(self, severity: str) -> str:
+        """Standardize severity values."""
+        severity = str(severity).lower().strip()
+        
+        # Common severity mappings
+        severity_mappings = {
+            "critical": ["critical", "5", "5.0", "high", "severe"],
+            "high": ["high", "4", "4.0", "moderate"],
+            "medium": ["medium", "3", "3.0", "moderate"],
+            "low": ["low", "2", "2.0", "minor"],
+            "info": ["info", "1", "1.0", "information", "informational"]
+        }
+        
+        for standard_severity, variations in severity_mappings.items():
+            if severity in variations or any(var in severity for var in variations):
+                return standard_severity
+        
+        return "unknown"
+
+    async def _normalize_confidence_scores(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize confidence scores to 0-100 scale."""
+        if "confidence" in item and item["confidence"] is not None:
+            try:
+                confidence = float(item["confidence"])
+                # Normalize to 0-100 scale
+                if confidence > 1.0:  # Already in 0-100 scale
+                    item["confidence"] = min(100, max(0, confidence))
+                else:  # Convert from 0-1 scale
+                    item["confidence"] = min(100, max(0, confidence * 100))
+            except (ValueError, TypeError):
+                item["confidence"] = 50  # Default confidence
+        
+        return item
+
+    async def _add_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Add metadata fields to the item."""
+        # Add processing metadata
+        item["processed_at"] = datetime.now(timezone.utc).isoformat()
+        item["data_version"] = "1.0"
+        
+        # Add source validation
+        if "source" in item:
+            item["source_verified"] = self._is_trusted_source(item["source"])
+        
+        # Add data quality score
+        item["data_quality_score"] = self._calculate_data_quality_score(item)
+        
+        return item
+
+    def _is_trusted_source(self, source: str) -> bool:
+        """Check if source is in trusted sources list."""
+        trusted_sources = [
+            "virustotal", "alienvault", "threatfox", "abuseipdb",
+            "phishtank", "urlhaus", "malwarebazaar", "misp"
+        ]
+        return source.lower() in trusted_sources
+
+    def _calculate_data_quality_score(self, item: Dict[str, Any]) -> int:
+        """Calculate data quality score based on completeness and validity."""
+        score = 0
+        max_score = 100
+        
+        # Required fields (20 points)
+        required_fields = ["indicator", "threat_type", "source"]
+        for field in required_fields:
+            if field in item and item[field]:
+                score += 20
+        
+        # Optional fields (10 points each)
+        optional_fields = ["description", "category", "severity", "confidence"]
+        for field in optional_fields:
+            if field in item and item[field]:
+                score += 10
+        
+        # Timestamp fields (5 points each)
+        timestamp_fields = ["first_seen", "last_seen"]
+        for field in timestamp_fields:
+            if field in item and item[field]:
+                score += 5
+        
+        return min(max_score, score)
+
+    async def _validate_required_fields(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate that required fields are present and valid."""
+        required_fields = ["indicator", "threat_type", "source"]
+        
+        for field in required_fields:
+            if field not in item or not item[field]:
+                raise ValueError(f"Required field '{field}' is missing or empty")
+        
+        # Ensure indicator is not empty
+        if not str(item["indicator"]).strip():
+            raise ValueError("Indicator field cannot be empty")
+        
+        return item
 
     async def log_ingestion_event(
         self,
