@@ -97,6 +97,17 @@ class EnhancedETLPipeline:
             
             logger.info(f"NVD ingestion completed: {len(data)} records in {processing_time:.2f}s")
             
+            # Log ingestion event
+            await self.dynamodb_service.log_ingestion_event(
+                source="nvd",
+                data_type="vulnerability",
+                timestamp=datetime.utcnow(),
+                record_count=len(data),
+                status="success",
+                processing_time=processing_time,
+                extra={"s3_file_key": s3_file_key}
+            )
+            
             return IngestionResult(
                 success=db_success,
                 source='nvd',
@@ -109,6 +120,15 @@ class EnhancedETLPipeline:
             
         except Exception as e:
             logger.error(f"NVD ingestion failed: {e}")
+            # Log failed event
+            await self.dynamodb_service.log_ingestion_event(
+                source="nvd",
+                data_type="vulnerability",
+                timestamp=datetime.utcnow(),
+                record_count=0,
+                status="error",
+                error_message=str(e)
+            )
             return IngestionResult(
                 success=False,
                 source='nvd',
@@ -160,6 +180,17 @@ class EnhancedETLPipeline:
             
             logger.info(f"VirusTotal ingestion completed: {len(data)} records in {processing_time:.2f}s")
             
+            # Log ingestion event
+            await self.dynamodb_service.log_ingestion_event(
+                source="virustotal",
+                data_type="malware",
+                timestamp=datetime.utcnow(),
+                record_count=len(data),
+                status="success",
+                processing_time=processing_time,
+                extra={"s3_file_key": s3_file_key, "hash_count": len(file_hashes)}
+            )
+            
             return IngestionResult(
                 success=db_success,
                 source='virustotal',
@@ -172,6 +203,15 @@ class EnhancedETLPipeline:
             
         except Exception as e:
             logger.error(f"VirusTotal ingestion failed: {e}")
+            # Log failed event
+            await self.dynamodb_service.log_ingestion_event(
+                source="virustotal",
+                data_type="malware",
+                timestamp=datetime.utcnow(),
+                record_count=0,
+                status="error",
+                error_message=str(e)
+            )
             return IngestionResult(
                 success=False,
                 source='virustotal',
@@ -223,6 +263,17 @@ class EnhancedETLPipeline:
             
             logger.info(f"Shodan ingestion completed: {len(data)} records in {processing_time:.2f}s")
             
+            # Log ingestion event
+            await self.dynamodb_service.log_ingestion_event(
+                source="shodan",
+                data_type="exposure",
+                timestamp=datetime.utcnow(),
+                record_count=len(data),
+                status="success",
+                processing_time=processing_time,
+                extra={"s3_file_key": s3_file_key, "ip_count": len(ips)}
+            )
+            
             return IngestionResult(
                 success=db_success,
                 source='shodan',
@@ -235,6 +286,15 @@ class EnhancedETLPipeline:
             
         except Exception as e:
             logger.error(f"Shodan ingestion failed: {e}")
+            # Log failed event
+            await self.dynamodb_service.log_ingestion_event(
+                source="shodan",
+                data_type="exposure",
+                timestamp=datetime.utcnow(),
+                record_count=0,
+                status="error",
+                error_message=str(e)
+            )
             return IngestionResult(
                 success=False,
                 source='shodan',

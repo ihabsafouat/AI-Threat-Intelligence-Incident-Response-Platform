@@ -44,7 +44,7 @@ class S3Loader:
     async def load_unstructured(self, data: Dict[str, Any], file_key: str) -> bool:
         """Load unstructured data to S3"""
         try:
-            await self.s3_client.put_object(
+            self.s3_client.put_object(
                 Bucket=self.bucket_name,
                 Key=file_key,
                 Body=json.dumps(data, default=str),
@@ -73,7 +73,7 @@ class DynamoDBLoader:
     async def load_structured(self, data: Dict[str, Any]) -> bool:
         """Load structured data to DynamoDB"""
         try:
-            await self.threat_table.put_item(Item=data)
+            self.threat_table.put_item(Item=data)
             return True
         except ClientError as e:
             logger.error(f"Failed to load structured data to DynamoDB: {e}")
@@ -91,8 +91,7 @@ class DynamoDBLoader:
                 'error_message': metadata.error_message,
                 'processing_time': metadata.processing_time
             }
-            
-            await self.metadata_table.put_item(Item=event_data)
+            self.metadata_table.put_item(Item=event_data)
             logger.info(f"Logged ingestion event: {metadata.source} - {metadata.status}")
             return True
         except ClientError as e:
@@ -106,7 +105,7 @@ class NVDExtractor:
     def __init__(self):
         self.nvd = NVDIntegration()
     
-    async def extract_recent_cves(self, days: int = 7) -> List[Dict[str, Any]]:
+    async def extract_recent_cves(self, days: int = 7) -> Dict[str, Any]:
         """Extract recent CVEs from NVD"""
         try:
             start_time = datetime.utcnow()
