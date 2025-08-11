@@ -128,6 +128,9 @@ class DynamoDBService:
             # Clean and validate confidence scores
             cleaned_item = await self._normalize_confidence_scores(cleaned_item)
             
+            # Extract CVE data if present
+            cleaned_item = await self.extract_cve_data(cleaned_item)
+            
             # Add metadata
             cleaned_item = await self._add_metadata(cleaned_item)
             
@@ -489,6 +492,365 @@ class DynamoDBService:
             raise ValueError("Indicator field cannot be empty")
         
         return item
+
+    # CVE Data Extraction Methods
+
+    async def extract_cve_data(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract and structure CVE data from threat intelligence items.
+        
+        Args:
+            item: Threat data item that may contain CVE information
+            
+        Returns:
+            dict: Enhanced item with extracted CVE data
+        """
+        try:
+            # Extract CVE ID from various fields
+            cve_id = self._extract_cve_id(item)
+            if cve_id:
+                item["cve_id"] = cve_id
+                item["cve_data"] = await self._extract_cve_details(item)
+            
+            return item
+        except Exception as e:
+            logger.error(f"Error extracting CVE data: {e}")
+            return item
+
+    def _extract_cve_id(self, item: Dict[str, Any]) -> Optional[str]:
+        """Extract CVE ID from various fields in the item."""
+        # Common fields where CVE IDs might be found
+        cve_fields = [
+            "cve_id", "cve", "vulnerability_id", "vuln_id", "cve_reference",
+            "indicator", "description", "references", "tags", "metadata"
+        ]
+        
+        for field in cve_fields:
+            if field in item and item[field]:
+                cve_id = self._parse_cve_id(str(item[field]))
+                if cve_id:
+                    return cve_id
+        
+        return None
+
+    def _parse_cve_id(self, text: str) -> Optional[str]:
+        """Parse CVE ID from text using regex patterns."""
+        # CVE ID pattern: CVE-YYYY-NNNNN
+        cve_pattern = r'CVE-\d{4}-\d{4,7}'
+        matches = re.findall(cve_pattern, text, re.IGNORECASE)
+        
+        if matches:
+            # Return the first valid CVE ID found
+            return matches[0].upper()
+        
+        return None
+
+    async def _extract_cve_details(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract detailed CVE information from the item."""
+        cve_data = {
+            "cve_id": item.get("cve_id"),
+            "description": self._extract_cve_description(item),
+            "cvss_score": self._extract_cvss_score(item),
+            "severity": self._extract_cve_severity(item),
+            "affected_software": self._extract_affected_software(item),
+            "affected_hardware": self._extract_affected_hardware(item),
+            "exploit_links": self._extract_exploit_links(item),
+            "references": self._extract_cve_references(item),
+            "published_date": self._extract_cve_published_date(item),
+            "last_updated": self._extract_cve_last_updated(item)
+        }
+        
+        return {k: v for k, v in cve_data.items() if v is not None}
+
+    def _extract_cve_description(self, item: Dict[str, Any]) -> Optional[str]:
+        """Extract CVE description from various fields."""
+        description_fields = [
+            "description", "cve_description", "vulnerability_description",
+            "summary", "details", "analysis"
+        ]
+        
+        for field in description_fields:
+            if field in item and item[field]:
+                description = str(item[field]).strip()
+                if len(description) > 10:  # Ensure meaningful description
+                    return description
+        
+        return None
+
+    def _extract_cvss_score(self, item: Dict[str, Any]) -> Optional[float]:
+        """Extract CVSS score from various fields."""
+        cvss_fields = [
+            "cvss_score", "cvss", "score", "vulnerability_score",
+            "risk_score", "severity_score"
+        ]
+        
+        for field in cvss_fields:
+            if field in item and item[field] is not None:
+                try:
+                    score = float(item[field])
+                    if 0 <= score <= 10:
+                        return round(score, 1)
+                except (ValueError, TypeError):
+                    continue
+        
+        return None
+
+    def _extract_cve_severity(self, item: Dict[str, Any]) -> Optional[str]:
+        """Extract CVE severity based on CVSS score or explicit severity field."""
+        # Check explicit severity field first
+        if "severity" in item and item["severity"]:
+            return str(item["severity"]).lower()
+        
+        # Calculate severity from CVSS score
+        cvss_score = self._extract_cvss_score(item)
+        if cvss_score is not None:
+            if cvss_score >= 9.0:
+                return "critical"
+            elif cvss_score >= 7.0:
+                return "high"
+            elif cvss_score >= 4.0:
+                return "medium"
+            elif cvss_score >= 0.1:
+                return "low"
+            else:
+                return "none"
+        
+        return None
+
+    def _extract_affected_software(self, item: Dict[str, Any]) -> List[str]:
+        """Extract affected software information."""
+        software_fields = [
+            "affected_software", "software", "application", "product",
+            "vendor", "component", "library", "framework"
+        ]
+        
+        affected_software = []
+        
+        for field in software_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], list):
+                    affected_software.extend(item[field])
+                elif isinstance(item[field], str):
+                    # Split by common delimiters
+                    software_list = re.split(r'[,;|]', item[field])
+                    affected_software.extend([s.strip() for s in software_list if s.strip()])
+                elif isinstance(item[field], dict):
+                    # Extract from nested structure
+                    for key, value in item[field].items():
+                        if value:
+                            affected_software.append(f"{key}: {value}")
+        
+        # Remove duplicates and clean
+        return list(set([s for s in affected_software if len(s) > 2]))
+
+    def _extract_affected_hardware(self, item: Dict[str, Any]) -> List[str]:
+        """Extract affected hardware information."""
+        hardware_fields = [
+            "affected_hardware", "hardware", "device", "equipment",
+            "platform", "architecture", "processor", "firmware"
+        ]
+        
+        affected_hardware = []
+        
+        for field in hardware_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], list):
+                    affected_hardware.extend(item[field])
+                elif isinstance(item[field], str):
+                    # Split by common delimiters
+                    hardware_list = re.split(r'[,;|]', item[field])
+                    affected_hardware.extend([h.strip() for h in hardware_list if h.strip()])
+                elif isinstance(item[field], dict):
+                    # Extract from nested structure
+                    for key, value in item[field].items():
+                        if value:
+                            affected_hardware.append(f"{key}: {value}")
+        
+        # Remove duplicates and clean
+        return list(set([h for h in affected_hardware if len(h) > 2]))
+
+    def _extract_exploit_links(self, item: Dict[str, Any]) -> List[str]:
+        """Extract exploit-related links and references."""
+        exploit_fields = [
+            "exploit_links", "exploit_urls", "proof_of_concept", "poc",
+            "exploit_db", "metasploit", "references", "urls", "links"
+        ]
+        
+        exploit_links = []
+        
+        for field in exploit_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], list):
+                    exploit_links.extend(item[field])
+                elif isinstance(item[field], str):
+                    # Extract URLs from text
+                    urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', item[field])
+                    exploit_links.extend(urls)
+                elif isinstance(item[field], dict):
+                    # Extract from nested structure
+                    for key, value in item[field].items():
+                        if value and isinstance(value, str):
+                            urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', value)
+                            exploit_links.extend(urls)
+        
+        # Filter for exploit-related URLs
+        exploit_keywords = [
+            'exploit', 'poc', 'proof', 'metasploit', 'exploit-db',
+            'github', 'raw.githubusercontent', 'pastebin', 'gist'
+        ]
+        
+        filtered_links = []
+        for link in exploit_links:
+            if any(keyword in link.lower() for keyword in exploit_keywords):
+                filtered_links.append(link)
+        
+        # Remove duplicates
+        return list(set(filtered_links))
+
+    def _extract_cve_references(self, item: Dict[str, Any]) -> List[str]:
+        """Extract all CVE-related references and links."""
+        reference_fields = [
+            "references", "refs", "links", "urls", "sources",
+            "external_links", "related_links"
+        ]
+        
+        references = []
+        
+        for field in reference_fields:
+            if field in item and item[field]:
+                if isinstance(item[field], list):
+                    references.extend(item[field])
+                elif isinstance(item[field], str):
+                    # Extract URLs from text
+                    urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', item[field])
+                    references.extend(urls)
+                elif isinstance(item[field], dict):
+                    # Extract from nested structure
+                    for key, value in item[field].items():
+                        if value and isinstance(value, str):
+                            urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', value)
+                            references.extend(urls)
+        
+        # Remove duplicates
+        return list(set(references))
+
+    def _extract_cve_published_date(self, item: Dict[str, Any]) -> Optional[str]:
+        """Extract CVE published date."""
+        date_fields = [
+            "published_date", "disclosure_date", "release_date",
+            "created_date", "announcement_date"
+        ]
+        
+        for field in date_fields:
+            if field in item and item[field]:
+                try:
+                    if isinstance(item[field], str):
+                        parsed_time = self._parse_timestamp(item[field])
+                        if parsed_time:
+                            return parsed_time.isoformat()
+                    elif isinstance(item[field], (int, float)):
+                        return datetime.fromtimestamp(item[field], tz=timezone.utc).isoformat()
+                except Exception:
+                    continue
+        
+        return None
+
+    def _extract_cve_last_updated(self, item: Dict[str, Any]) -> Optional[str]:
+        """Extract CVE last updated date."""
+        date_fields = [
+            "last_updated", "modified_date", "updated_date",
+            "last_modified", "revision_date"
+        ]
+        
+        for field in date_fields:
+            if field in item and item[field]:
+                try:
+                    if isinstance(item[field], str):
+                        parsed_time = self._parse_timestamp(item[field])
+                        if parsed_time:
+                            return parsed_time.isoformat()
+                    elif isinstance(item[field], (int, float)):
+                        return datetime.fromtimestamp(item[field], tz=timezone.utc).isoformat()
+                except Exception:
+                    continue
+        
+        return None
+
+    async def search_cve_by_software(self, software_name: str) -> List[Dict[str, Any]]:
+        """Search for CVEs affecting specific software."""
+        try:
+            # Scan the threat table for CVE data
+            response = self._threat_table.scan()
+            items = response.get("Items", [])
+            
+            # Paginate if needed
+            while response.get("LastEvaluatedKey"):
+                response = self._threat_table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+                items.extend(response.get("Items", []))
+            
+            # Filter for CVEs affecting the specified software
+            matching_cves = []
+            software_lower = software_name.lower()
+            
+            for item in items:
+                if "cve_data" in item and "affected_software" in item["cve_data"]:
+                    affected_software = item["cve_data"]["affected_software"]
+                    if any(software_lower in software.lower() for software in affected_software):
+                        matching_cves.append(item)
+            
+            return matching_cves
+            
+        except ClientError as e:
+            logger.error(f"Failed to search CVEs by software: {e}")
+            return []
+
+    async def get_cve_statistics(self) -> Dict[str, Any]:
+        """Get statistics about stored CVE data."""
+        try:
+            response = self._threat_table.scan()
+            items = response.get("Items", [])
+            
+            # Paginate if needed
+            while response.get("LastEvaluatedKey"):
+                response = self._threat_table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+                items.extend(response.get("Items", []))
+            
+            cve_items = [item for item in items if "cve_id" in item]
+            
+            # Calculate statistics
+            total_cves = len(cve_items)
+            severity_counts = {}
+            cvss_ranges = {"0-3.9": 0, "4.0-6.9": 0, "7.0-8.9": 0, "9.0-10.0": 0}
+            
+            for item in cve_items:
+                if "cve_data" in item:
+                    cve_data = item["cve_data"]
+                    
+                    # Count by severity
+                    severity = cve_data.get("severity", "unknown")
+                    severity_counts[severity] = severity_counts.get(severity, 0) + 1
+                    
+                    # Count by CVSS range
+                    cvss_score = cve_data.get("cvss_score")
+                    if cvss_score is not None:
+                        if cvss_score < 4.0:
+                            cvss_ranges["0-3.9"] += 1
+                        elif cvss_score < 7.0:
+                            cvss_ranges["4.0-6.9"] += 1
+                        elif cvss_score < 9.0:
+                            cvss_ranges["7.0-8.9"] += 1
+                        else:
+                            cvss_ranges["9.0-10.0"] += 1
+            
+            return {
+                "total_cves": total_cves,
+                "severity_distribution": severity_counts,
+                "cvss_score_ranges": cvss_ranges,
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+            
+        except ClientError as e:
+            logger.error(f"Failed to get CVE statistics: {e}")
+            return {"total_cves": 0, "severity_distribution": {}, "cvss_score_ranges": {}}
 
     async def log_ingestion_event(
         self,
