@@ -1,0 +1,24 @@
+# AWS CDK Core
+aws-cdk-lib>=2.100.0
+constructs>=10.3.0
+
+# AWS CDK Extensions
+aws-cdk.aws-apigatewayv2-alpha>=2.100.0a0
+aws-cdk.aws-apigatewayv2-integrations-alpha>=2.100.0a0
+aws-cdk.aws-ecs-patterns-alpha>=2.100.0a0
+aws-cdk.aws-elasticloadbalancingv2-targets-alpha>=2.100.0a0
+
+# Development and Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.7.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# Utilities
+boto3>=1.34.0
+botocore>=1.34.0
+click>=8.1.0
+jinja2>=3.1.0
+pyyaml>=6.0
+python-dotenv>=1.0.0 

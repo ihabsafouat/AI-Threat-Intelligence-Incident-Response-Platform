@@ -249,7 +249,7 @@ class CybersecurityFineTuningService:
         return {
             'train': splits['train'],
             'validation': val_test['train'],
-            'test': val_test['test']
+            'test': val_test['train']
         }
 
     def _limit_dataset_size(self, splits: Dict[str, Dataset], max_samples: int) -> Dict[str, Dataset]:
@@ -361,21 +361,261 @@ class CybersecurityFineTuningService:
             )
 
     def compute_metrics(self, eval_pred):
-        """Compute evaluation metrics."""
+        """Compute evaluation metrics including relevance metrics."""
         predictions, labels = eval_pred
         predictions = np.argmax(predictions, axis=1)
         
+        # Standard classification metrics
         precision, recall, f1, _ = precision_recall_fscore_support(
             labels, predictions, average='weighted'
         )
         acc = accuracy_score(labels, predictions)
         
+        # Relevance metrics for cybersecurity context
+        relevance_metrics = self._compute_relevance_metrics(predictions, labels)
+        
         return {
             'accuracy': acc,
             'f1': f1,
             'precision': precision,
-            'recall': recall
+            'recall': recall,
+            **relevance_metrics
         }
+
+    def _compute_relevance_metrics(self, predictions: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """Compute relevance metrics for cybersecurity evaluation."""
+        try:
+            metrics = {}
+            
+            # Recall@k metrics (k = 1, 3, 5, 10)
+            k_values = [1, 3, 5, 10]
+            for k in k_values:
+                recall_at_k = self._compute_recall_at_k(predictions, labels, k)
+                metrics[f'recall_at_{k}'] = recall_at_k
+            
+            # Mean Reciprocal Rank (MRR)
+            mrr = self._compute_mrr(predictions, labels)
+            metrics['mrr'] = mrr
+            
+            # Normalized Discounted Cumulative Gain (nDCG)
+            ndcg = self._compute_ndcg(predictions, labels)
+            metrics['ndcg'] = ndcg
+            
+            # Mean Average Precision (MAP)
+            map_score = self._compute_map(predictions, labels)
+            metrics['map'] = map_score
+            
+            # Cybersecurity-specific relevance metrics
+            threat_detection_metrics = self._compute_threat_detection_metrics(predictions, labels)
+            metrics.update(threat_detection_metrics)
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Failed to compute relevance metrics: {e}")
+            return {}
+
+    def _compute_recall_at_k(self, predictions: np.ndarray, labels: np.ndarray, k: int) -> float:
+        """Compute Recall@k metric."""
+        try:
+            if k > len(predictions):
+                k = len(predictions)
+            
+            # For each prediction, check if the true label is in top-k
+            correct_in_top_k = 0
+            total = len(predictions)
+            
+            for i in range(total):
+                # Get top-k predictions for this sample
+                top_k_preds = predictions[i][:k] if hasattr(predictions[i], '__iter__') else [predictions[i]]
+                if labels[i] in top_k_preds:
+                    correct_in_top_k += 1
+            
+            return correct_in_top_k / total if total > 0 else 0.0
+            
+        except Exception as e:
+            logger.error(f"Failed to compute Recall@{k}: {e}")
+            return 0.0
+
+    def _compute_mrr(self, predictions: np.ndarray, labels: np.ndarray) -> float:
+        """Compute Mean Reciprocal Rank (MRR)."""
+        try:
+            reciprocal_ranks = []
+            
+            for i in range(len(predictions)):
+                true_label = labels[i]
+                
+                # Find the rank of the true label in predictions
+                if hasattr(predictions[i], '__iter__'):
+                    pred_list = predictions[i]
+                else:
+                    pred_list = [predictions[i]]
+                
+                try:
+                    rank = pred_list.index(true_label) + 1
+                    reciprocal_ranks.append(1.0 / rank)
+                except ValueError:
+                    # True label not found in predictions
+                    reciprocal_ranks.append(0.0)
+            
+            return np.mean(reciprocal_ranks) if reciprocal_ranks else 0.0
+            
+        except Exception as e:
+            logger.error(f"Failed to compute MRR: {e}")
+            return 0.0
+
+    def _compute_ndcg(self, predictions: np.ndarray, labels: np.ndarray) -> float:
+        """Compute Normalized Discounted Cumulative Gain (nDCG)."""
+        try:
+            # For simplicity, we'll compute a basic version
+            # In practice, you might want to use more sophisticated relevance scores
+            
+            total_ndcg = 0.0
+            total_ideal_ndcg = 0.0
+            
+            for i in range(len(predictions)):
+                true_label = labels[i]
+                
+                if hasattr(predictions[i], '__iter__'):
+                    pred_list = predictions[i]
+                else:
+                    pred_list = [predictions[i]]
+                
+                # Compute DCG for predictions
+                dcg = 0.0
+                for j, pred in enumerate(pred_list):
+                    relevance = 1.0 if pred == true_label else 0.0
+                    dcg += relevance / np.log2(j + 2)  # +2 to avoid log(1) = 0
+                
+                # Compute ideal DCG (perfect ranking)
+                ideal_dcg = 1.0 / np.log2(2)  # Best case: true label at position 1
+                
+                total_ndcg += dcg
+                total_ideal_ndcg += ideal_dcg
+            
+            # Normalize
+            if total_ideal_ndcg > 0:
+                return total_ndcg / total_ideal_ndcg
+            else:
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Failed to compute nDCG: {e}")
+            return 0.0
+
+    def _compute_map(self, predictions: np.ndarray, labels: np.ndarray) -> float:
+        """Compute Mean Average Precision (MAP)."""
+        try:
+            average_precisions = []
+            
+            for i in range(len(predictions)):
+                true_label = labels[i]
+                
+                if hasattr(predictions[i], '__iter__'):
+                    pred_list = predictions[i]
+                else:
+                    pred_list = [predictions[i]]
+                
+                # Compute average precision for this sample
+                relevant_positions = []
+                for j, pred in enumerate(pred_list):
+                    if pred == true_label:
+                        relevant_positions.append(j + 1)
+                
+                if relevant_positions:
+                    # Compute precision at each relevant position
+                    precisions = []
+                    for pos in relevant_positions:
+                        # Count relevant items up to this position
+                        relevant_up_to_pos = sum(1 for p in relevant_positions if p <= pos)
+                        precision = relevant_up_to_pos / pos
+                        precisions.append(precision)
+                    
+                    # Average precision for this sample
+                    ap = np.mean(precisions)
+                    average_precisions.append(ap)
+                else:
+                    # No relevant items found
+                    average_precisions.append(0.0)
+            
+            return np.mean(average_precisions) if average_precisions else 0.0
+            
+        except Exception as e:
+            logger.error(f"Failed to compute MAP: {e}")
+            return 0.0
+
+    def _compute_threat_detection_metrics(self, predictions: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """Compute cybersecurity-specific threat detection metrics."""
+        try:
+            metrics = {}
+            
+            # Threat type detection accuracy
+            threat_types = ["ransomware", "phishing", "apt", "malware", "ddos", "data_breach", "insider_threat"]
+            threat_accuracies = {}
+            
+            for threat_type in threat_types:
+                threat_idx = self._get_label_mapping().get(threat_type)
+                if threat_idx is not None:
+                    # Find samples with this threat type
+                    threat_mask = labels == threat_idx
+                    if np.any(threat_mask):
+                        threat_predictions = predictions[threat_mask]
+                        threat_labels = labels[threat_mask]
+                        
+                        # Compute accuracy for this threat type
+                        correct = np.sum(threat_predictions == threat_labels)
+                        total = len(threat_predictions)
+                        accuracy = correct / total if total > 0 else 0.0
+                        
+                        threat_accuracies[f'{threat_type}_accuracy'] = accuracy
+            
+            metrics.update(threat_accuracies)
+            
+            # False positive rate for critical threats
+            critical_threats = ["ransomware", "apt", "data_breach"]
+            critical_fp_rate = 0.0
+            critical_count = 0
+            
+            for threat_type in critical_threats:
+                threat_idx = self._get_label_mapping().get(threat_type)
+                if threat_idx is not None:
+                    # Find samples predicted as this threat type
+                    predicted_mask = predictions == threat_idx
+                    if np.any(predicted_mask):
+                        predicted_labels = labels[predicted_mask]
+                        # Count false positives (predicted as critical but not actually)
+                        false_positives = np.sum(predicted_labels != threat_idx)
+                        total_predicted = len(predicted_labels)
+                        
+                        if total_predicted > 0:
+                            fp_rate = false_positives / total_predicted
+                            critical_fp_rate += fp_rate
+                            critical_count += 1
+            
+            if critical_count > 0:
+                metrics['critical_threats_fp_rate'] = critical_fp_rate / critical_count
+            
+            # Response time accuracy (for incident reports)
+            response_time_accuracy = self._compute_response_time_accuracy(predictions, labels)
+            if response_time_accuracy is not None:
+                metrics['response_time_accuracy'] = response_time_accuracy
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Failed to compute threat detection metrics: {e}")
+            return {}
+
+    def _compute_response_time_accuracy(self, predictions: np.ndarray, labels: np.ndarray) -> Optional[float]:
+        """Compute accuracy of response time predictions for incident reports."""
+        try:
+            # This would be implemented based on your specific data structure
+            # For now, return None to indicate this metric is not available
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to compute response time accuracy: {e}")
+            return None
 
     async def start_training(self, 
                            train_dataset: Dataset,

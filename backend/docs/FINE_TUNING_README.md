@@ -260,7 +260,7 @@ FINE_TUNING_BATCH_SIZE = 4  # Adjust based on GPU memory
 
 ## 🔍 Model Evaluation
 
-### Metrics
+### Standard Metrics
 
 | Metric | Description | Target |
 |--------|-------------|---------|
@@ -269,18 +269,69 @@ FINE_TUNING_BATCH_SIZE = 4  # Adjust based on GPU memory
 | **Precision** | True positives / (True + False positives) | > 0.80 |
 | **Recall** | True positives / (True + False negatives) | > 0.80 |
 
+### Relevance Metrics
+
+The system now includes comprehensive relevance metrics for cybersecurity applications:
+
+#### Recall@k Metrics
+- **Recall@1**: Percentage of queries where the correct answer is in the top 1 result
+- **Recall@3**: Percentage of queries where the correct answer is in the top 3 results  
+- **Recall@5**: Percentage of queries where the correct answer is in the top 5 results
+- **Recall@10**: Percentage of queries where the correct answer is in the top 10 results
+
+**Target**: > 0.8 for critical cybersecurity tasks
+
+#### Ranking Quality Metrics
+- **MRR (Mean Reciprocal Rank)**: Average of reciprocal ranks of true labels
+  - **Target**: > 0.7 (true labels appear early in predictions)
+  - **Interpretation**: Higher values mean threats are detected earlier
+  
+- **nDCG (Normalized Discounted Cumulative Gain)**: Measures ranking quality
+  - **Target**: > 0.7 (predictions are well-ordered by relevance)
+  - **Interpretation**: Higher values mean better relevance ordering
+  
+- **MAP (Mean Average Precision)**: Overall ranking performance
+  - **Target**: > 0.7 (good balance of precision and recall across ranks)
+  - **Interpretation**: Higher values mean better overall ranking performance
+
+#### Cybersecurity-Specific Metrics
+- **Threat Detection Accuracy**: Per-threat-type classification accuracy
+- **False Positive Rate**: Rate of false threat alerts
+- **Response Time Accuracy**: Accuracy of incident response time predictions
+- **Critical Threat Metrics**: Special focus on ransomware, APT, and data breach detection
+
 ### Quality Assessment
 
 ```python
-# Automatic quality assessment
-quality_assessment = "Good" if f1_score > 0.7 else "Needs improvement"
+# Automatic quality assessment with relevance metrics
+quality_assessment = "Good" if f1_score > 0.7 and mrr > 0.6 else "Needs improvement"
 
-# Detailed analysis
-detailed_metrics = {
-    "per_class_accuracy": {...},
-    "confusion_matrix": [...],
-    "sample_predictions": [...]
+# Detailed relevance analysis
+relevance_analysis = {
+    "recall_at_k": {"recall@1": 0.85, "recall@3": 0.92, "recall@5": 0.95},
+    "ranking_metrics": {"mrr": 0.78, "ndcg": 0.82, "map": 0.79},
+    "cybersecurity_specific": {"threat_detection_accuracy": 0.88}
 }
+```
+
+### Relevance Metrics API
+
+```python
+# Dedicated relevance metrics evaluation
+POST /fine-tuning/evaluate-relevance
+
+# Request body
+{
+    "k_values": [1, 3, 5, 10],
+    "include_cybersecurity_metrics": true,
+    "checkpoint_path": "optional_checkpoint"
+}
+
+# Response includes:
+# - Detailed relevance metrics
+# - Interpretation of each metric
+# - Cybersecurity-specific analysis
+# - Actionable recommendations
 ```
 
 ## 💾 Model Management

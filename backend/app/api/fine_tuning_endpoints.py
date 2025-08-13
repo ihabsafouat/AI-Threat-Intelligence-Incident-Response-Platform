@@ -73,6 +73,13 @@ class EvaluationResult(BaseModel):
     timestamp: str
     model_path: str
     quality_assessment: Optional[str] = None
+    relevance_metrics: Optional[Dict[str, Any]] = None
+
+class RelevanceMetricsRequest(BaseModel):
+    checkpoint_path: Optional[str] = None
+    use_best_model: bool = True
+    k_values: List[int] = [1, 3, 5, 10]
+    include_cybersecurity_metrics: bool = True
 
 # Service instances
 fine_tuning_service = None
@@ -277,16 +284,176 @@ async def evaluate_model(
         # Assess quality
         quality_assessment = "Good" if eval_results["overall_metrics"].get("f1", 0) > 0.7 else "Needs improvement"
         
+        # Extract relevance metrics from overall metrics
+        relevance_metrics = {}
+        if "overall_metrics" in eval_results:
+            overall = eval_results["overall_metrics"]
+            relevance_metrics = {
+                "recall_at_k": {k: overall.get(f"recall_at_{k}", 0.0) for k in [1, 3, 5, 10] if f"recall_at_{k}" in overall},
+                "mrr": overall.get("mrr", 0.0),
+                "ndcg": overall.get("ndcg", 0.0),
+                "map": overall.get("map", 0.0),
+                "cybersecurity_metrics": {k: v for k, v in overall.items() if any(term in k.lower() for term in ["threat", "ransomware", "phishing", "apt", "malware"])}
+            }
+        
         return EvaluationResult(
             overall_metrics=eval_results["overall_metrics"],
             detailed_metrics=eval_results["detailed_metrics"],
             timestamp=eval_results["timestamp"],
             model_path=eval_results["model_path"],
-            quality_assessment=quality_assessment
+            quality_assessment=quality_assessment,
+            relevance_metrics=relevance_metrics
         )
         
     except Exception as e:
         logger.error(f"Failed to evaluate model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/evaluate-relevance", response_model=Dict[str, Any])
+async def evaluate_relevance_metrics(
+    request: RelevanceMetricsRequest,
+    service: CybersecurityFineTuningService = Depends(get_fine_tuning_service),
+    data_service: CybersecurityDataPreparationService = Depends(get_data_preparation_service)
+):
+    """Evaluate model using relevance metrics (Recall@k, MRR, nDCG, MAP)."""
+    try:
+        logger.info("Evaluating relevance metrics...")
+        
+        # Load checkpoint if specified
+        if request.checkpoint_path:
+            await service.load_checkpoint(request.checkpoint_path)
+        
+        # Prepare test dataset
+        splits = await data_service.prepare_comprehensive_dataset(
+            include_synthetic=False,
+            max_samples_per_category=200  # More samples for better relevance evaluation
+        )
+        
+        # Evaluate model
+        eval_results = await service.evaluate_model(splits['test'])
+        
+        # Extract and analyze relevance metrics
+        overall_metrics = eval_results["overall_metrics"]
+        
+        relevance_analysis = {
+            "timestamp": datetime.now().isoformat(),
+            "model_path": eval_results["model_path"],
+            "dataset_size": len(splits['test']),
+            "relevance_metrics": {
+                "recall_at_k": {},
+                "ranking_metrics": {},
+                "cybersecurity_specific": {}
+            },
+            "interpretation": {},
+            "recommendations": []
+        }
+        
+        # Recall@k metrics
+        for k in request.k_values:
+            key = f"recall_at_{k}"
+            if key in overall_metrics:
+                value = overall_metrics[key]
+                relevance_analysis["relevance_metrics"]["recall_at_k"][f"recall@{k}"] = value
+                
+                # Interpretation
+                if value >= 0.9:
+                    relevance_analysis["interpretation"][f"recall@{k}"] = "Excellent - Model finds relevant items in top-k with high accuracy"
+                elif value >= 0.7:
+                    relevance_analysis["interpretation"][f"recall@{k}"] = "Good - Model performs well at finding relevant items"
+                elif value >= 0.5:
+                    relevance_analysis["interpretation"][f"recall@{k}"] = "Fair - Model has moderate success finding relevant items"
+                else:
+                    relevance_analysis["interpretation"][f"recall@{k}"] = "Poor - Model struggles to find relevant items in top-k"
+        
+        # Ranking metrics
+        ranking_metrics = ["mrr", "ndcg", "map"]
+        for metric in ranking_metrics:
+            if metric in overall_metrics:
+                value = overall_metrics[metric]
+                relevance_analysis["relevance_metrics"]["ranking_metrics"][metric.upper()] = value
+                
+                # Interpretation
+                if metric == "mrr":
+                    if value >= 0.8:
+                        relevance_analysis["interpretation"]["mrr"] = "Excellent - True labels appear very early in predictions"
+                    elif value >= 0.6:
+                        relevance_analysis["interpretation"]["mrr"] = "Good - True labels appear early in predictions"
+                    elif value >= 0.4:
+                        relevance_analysis["interpretation"]["mrr"] = "Fair - True labels appear moderately early"
+                    else:
+                        relevance_analysis["interpretation"]["mrr"] = "Poor - True labels appear late in predictions"
+                
+                elif metric == "ndcg":
+                    if value >= 0.8:
+                        relevance_analysis["interpretation"]["ndcg"] = "Excellent - Predictions are well-ordered by relevance"
+                    elif value >= 0.6:
+                        relevance_analysis["interpretation"]["ndcg"] = "Good - Predictions show good relevance ordering"
+                    elif value >= 0.4:
+                        relevance_analysis["interpretation"]["ndcg"] = "Fair - Some relevance ordering present"
+                    else:
+                        relevance_analysis["interpretation"]["ndcg"] = "Poor - Little relevance ordering in predictions"
+        
+        # Cybersecurity-specific metrics
+        if request.include_cybersecurity_metrics:
+            cyber_metrics = {k: v for k, v in overall_metrics.items() 
+                           if any(term in k.lower() for term in ["threat", "ransomware", "phishing", "apt", "malware", "accuracy"])}
+            
+            relevance_analysis["relevance_metrics"]["cybersecurity_specific"] = cyber_metrics
+            
+            # Analyze threat detection performance
+            threat_accuracies = {k: v for k, v in cyber_metrics.items() if "accuracy" in k.lower()}
+            if threat_accuracies:
+                avg_threat_accuracy = sum(threat_accuracies.values()) / len(threat_accuracies)
+                relevance_analysis["interpretation"]["threat_detection"] = f"Average threat detection accuracy: {avg_threat_accuracy:.3f}"
+                
+                if avg_threat_accuracy >= 0.9:
+                    relevance_analysis["interpretation"]["threat_detection"] += " - Excellent threat detection capabilities"
+                elif avg_threat_accuracy >= 0.7:
+                    relevance_analysis["interpretation"]["threat_detection"] += " - Good threat detection capabilities"
+                elif avg_threat_accuracy >= 0.5:
+                    relevance_analysis["interpretation"]["threat_detection"] += " - Fair threat detection capabilities"
+                else:
+                    relevance_analysis["interpretation"]["threat_detection"] += " - Poor threat detection capabilities"
+        
+        # Generate recommendations
+        recommendations = []
+        
+        # Recall@k recommendations
+        recall_metrics = relevance_analysis["relevance_metrics"]["recall_at_k"]
+        if recall_metrics:
+            avg_recall = sum(recall_metrics.values()) / len(recall_metrics)
+            if avg_recall < 0.6:
+                recommendations.append("Consider increasing training data diversity to improve recall")
+                recommendations.append("Review data preprocessing and augmentation techniques")
+            elif avg_recall < 0.8:
+                recommendations.append("Model could benefit from more targeted training examples")
+        
+        # MRR recommendations
+        mrr = overall_metrics.get("mrr", 0.0)
+        if mrr < 0.5:
+            recommendations.append("Model ranking quality needs improvement - consider adjusting loss function")
+            recommendations.append("Review training data ordering and sequence structure")
+        
+        # Cybersecurity recommendations
+        if "cybersecurity_specific" in relevance_analysis["relevance_metrics"]:
+            cyber_metrics = relevance_analysis["relevance_metrics"]["cybersecurity_specific"]
+            if any("fp_rate" in k.lower() for k in cyber_metrics.keys()):
+                fp_rates = [v for k, v in cyber_metrics.items() if "fp_rate" in k.lower()]
+                avg_fp_rate = sum(fp_rates) / len(fp_rates)
+                if avg_fp_rate > 0.3:
+                    recommendations.append("High false positive rate detected - consider adjusting classification thresholds")
+                    recommendations.append("Review training data quality and balance")
+        
+        relevance_analysis["recommendations"] = recommendations
+        
+        return {
+            "success": True,
+            "message": "Relevance metrics evaluation completed",
+            "results": relevance_analysis
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to evaluate relevance metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/datasets", response_model=List[str])

@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     FINE_TUNING_EARLY_STOPPING_PATIENCE: int = 3
     FINE_TUNING_EARLY_STOPPING_THRESHOLD: float = 0.001
     
+    # Relevance Metrics Configuration
+    FINE_TUNING_RECALL_K_VALUES: List[int] = [1, 3, 5, 10]  # Values for Recall@k
+    FINE_TUNING_ENABLE_MRR: bool = True  # Enable Mean Reciprocal Rank
+    FINE_TUNING_ENABLE_NDCG: bool = True  # Enable Normalized Discounted Cumulative Gain
+    FINE_TUNING_ENABLE_MAP: bool = True  # Enable Mean Average Precision
+    FINE_TUNING_CYBERSECURITY_METRICS: bool = True  # Enable cybersecurity-specific metrics
+    
     # Hardware Configuration
     FINE_TUNING_DEVICE: str = "auto"  # auto, cpu, cuda, mps
     FINE_TUNING_MIXED_PRECISION: str = "fp16"  # fp16, bf16, fp32

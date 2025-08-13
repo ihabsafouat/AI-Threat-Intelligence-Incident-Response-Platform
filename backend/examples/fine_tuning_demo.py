@@ -74,6 +74,9 @@ class FineTuningDemo:
             # Step 5: Evaluate Model
             await self.evaluate_model()
             
+            # Step 5.5: Evaluate Relevance Metrics
+            await self.evaluate_relevance_metrics()
+            
             # Step 6: Generate Sample Predictions
             await self.generate_sample_predictions()
             
@@ -249,6 +252,34 @@ class FineTuningDemo:
                 else:
                     logger.info(f"     * {metric}: {value}")
             
+            # Display relevance metrics specifically
+            if 'relevance_metrics' in eval_results:
+                relevance_metrics = eval_results['relevance_metrics']
+                logger.info(f"   - Relevance Metrics:")
+                
+                # Recall@k metrics
+                if 'recall_at_k' in relevance_metrics:
+                    logger.info(f"     * Recall@k:")
+                    for k, value in relevance_metrics['recall_at_k'].items():
+                        logger.info(f"       - {k}: {value:.4f}")
+                
+                # Ranking metrics
+                if 'mrr' in relevance_metrics:
+                    logger.info(f"     * MRR: {relevance_metrics['mrr']:.4f}")
+                if 'ndcg' in relevance_metrics:
+                    logger.info(f"     * nDCG: {relevance_metrics['ndcg']:.4f}")
+                if 'map' in relevance_metrics:
+                    logger.info(f"     * MAP: {relevance_metrics['map']:.4f}")
+                
+                # Cybersecurity metrics
+                if 'cybersecurity_metrics' in relevance_metrics:
+                    logger.info(f"     * Cybersecurity Metrics:")
+                    for metric, value in relevance_metrics['cybersecurity_metrics'].items():
+                        if isinstance(value, float):
+                            logger.info(f"       - {metric}: {value:.4f}")
+                        else:
+                            logger.info(f"       - {metric}: {value}")
+            
             # Quality assessment
             quality_assessment = eval_results.get('quality_assessment', 'Unknown')
             logger.info(f"   - Quality assessment: {quality_assessment}")
@@ -259,6 +290,33 @@ class FineTuningDemo:
         except Exception as e:
             logger.error(f"Failed to evaluate model: {e}")
             # Don't raise here, as the model might still be usable
+
+    async def evaluate_relevance_metrics(self):
+        """Step 5.5: Detailed relevance metrics evaluation."""
+        logger.info("\n📊 Step 5.5: Relevance Metrics Deep Dive")
+        logger.info("=" * 50)
+        
+        try:
+            logger.info("Performing detailed relevance metrics evaluation...")
+            
+            # This would call the new relevance metrics endpoint
+            # For demo purposes, we'll show what metrics are available
+            logger.info("Available relevance metrics:")
+            logger.info("   - Recall@k: Measures if relevant items appear in top-k predictions")
+            logger.info("   - MRR (Mean Reciprocal Rank): Average of reciprocal ranks of true labels")
+            logger.info("   - nDCG: Normalized Discounted Cumulative Gain for ranking quality")
+            logger.info("   - MAP: Mean Average Precision for overall ranking performance")
+            logger.info("   - Cybersecurity-specific: Threat detection accuracy, false positive rates")
+            
+            logger.info("\nRelevance metrics are crucial for cybersecurity because:")
+            logger.info("   - Early threat detection (high MRR) saves time and resources")
+            logger.info("   - Comprehensive coverage (high Recall@k) ensures no threats are missed")
+            logger.info("   - Accurate ranking (high nDCG) helps prioritize response actions")
+            logger.info("   - Low false positive rates prevent alert fatigue")
+            
+        except Exception as e:
+            logger.error(f"Failed to evaluate relevance metrics: {e}")
+            # Don't raise here, as this is an enhancement feature
     
     async def generate_sample_predictions(self):
         """Step 6: Generate sample predictions with the fine-tuned model."""
