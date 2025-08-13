@@ -67,6 +67,69 @@ class Settings(BaseSettings):
     WEAVIATE_API_KEY: Optional[str] = None
     WEAVIATE_CLASS_NAME: str = "ThreatIntel"
     
+    # LangChain and RAG Configuration
+    LLM_PROVIDER: str = "openai"  # Options: "openai", "anthropic", "local"
+    OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    OPENAI_TEMPERATURE: float = 0.1
+    OPENAI_MAX_TOKENS: int = 4000
+    
+    # RAG Settings
+    RAG_CHUNK_SIZE: int = 1000
+    RAG_CHUNK_OVERLAP: int = 200
+    RAG_TOP_K_RETRIEVAL: int = 8
+    RAG_TOP_K_GENERATION: int = 5
+    RAG_SIMILARITY_THRESHOLD: float = 0.7
+    RAG_MAX_CONTEXT_LENGTH: int = 8000
+
+    # Fine-tuning Configuration
+    FINE_TUNING_ENABLED: bool = True
+    FINE_TUNING_MODEL: str = "microsoft/DialoGPT-medium"  # Base model for fine-tuning
+    FINE_TUNING_DATASET_PATH: str = "./data/fine_tuning/"
+    FINE_TUNING_OUTPUT_PATH: str = "./ml/fine_tuned_models/"
+    FINE_TUNING_CHECKPOINT_PATH: str = "./ml/checkpoints/"
+    
+    # Fine-tuning Hyperparameters
+    FINE_TUNING_LEARNING_RATE: float = 2e-5
+    FINE_TUNING_BATCH_SIZE: int = 4
+    FINE_TUNING_GRADIENT_ACCUMULATION_STEPS: int = 4
+    FINE_TUNING_WARMUP_STEPS: int = 100
+    FINE_TUNING_MAX_STEPS: int = 1000
+    FINE_TUNING_SAVE_STEPS: int = 500
+    FINE_TUNING_EVAL_STEPS: int = 500
+    FINE_TUNING_LOGGING_STEPS: int = 10
+    FINE_TUNING_MAX_SEQ_LENGTH: int = 512
+    FINE_TUNING_WEIGHT_DECAY: float = 0.01
+    FINE_TUNING_GRADIENT_CHECKPOINTING: bool = True
+    
+    # LoRA Configuration (Parameter Efficient Fine-tuning)
+    FINE_TUNING_USE_LORA: bool = True
+    FINE_TUNING_LORA_R: int = 16
+    FINE_TUNING_LORA_ALPHA: int = 32
+    FINE_TUNING_LORA_DROPOUT: float = 0.1
+    
+    # Training Data Configuration
+    FINE_TUNING_TRAIN_SPLIT: float = 0.8
+    FINE_TUNING_VAL_SPLIT: float = 0.1
+    FINE_TUNING_TEST_SPLIT: float = 0.1
+    FINE_TUNING_MAX_SAMPLES: Optional[int] = None  # None for all data
+    
+    # Model Evaluation
+    FINE_TUNING_EVAL_METRICS: List[str] = ["accuracy", "f1", "precision", "recall"]
+    FINE_TUNING_EARLY_STOPPING_PATIENCE: int = 3
+    FINE_TUNING_EARLY_STOPPING_THRESHOLD: float = 0.001
+    
+    # Hardware Configuration
+    FINE_TUNING_DEVICE: str = "auto"  # auto, cpu, cuda, mps
+    FINE_TUNING_MIXED_PRECISION: str = "fp16"  # fp16, bf16, fp32
+    FINE_TUNING_USE_8BIT: bool = False
+    FINE_TUNING_USE_4BIT: bool = False
+    
+    # Logging and Monitoring
+    FINE_TUNING_USE_WANDB: bool = False
+    FINE_TUNING_WANDB_PROJECT: str = "cybersecurity-llm-finetuning"
+    FINE_TUNING_USE_TENSORBOARD: bool = True
+    FINE_TUNING_LOG_LEVEL: str = "INFO"
+    
     # Threat Intelligence Sources
     THREAT_FEEDS: List[str] = [
         "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/alienvault_reputation.ipset",
@@ -121,4 +184,7 @@ settings = Settings()
 # Create necessary directories
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(settings.LOG_FILE), exist_ok=True)
-os.makedirs(settings.MODEL_PATH, exist_ok=True) 
+os.makedirs(settings.MODEL_PATH, exist_ok=True)
+os.makedirs(settings.FINE_TUNING_DATASET_PATH, exist_ok=True)
+os.makedirs(settings.FINE_TUNING_OUTPUT_PATH, exist_ok=True)
+os.makedirs(settings.FINE_TUNING_CHECKPOINT_PATH, exist_ok=True) 
