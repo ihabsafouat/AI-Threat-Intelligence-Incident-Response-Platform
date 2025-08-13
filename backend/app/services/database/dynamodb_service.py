@@ -10,6 +10,8 @@ import boto3
 from botocore.exceptions import ClientError
 
 from app.core.config import settings
+from app.services.embedding_service import EmbeddingService
+from app.services.vector_store_service import VectorStoreService
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +25,26 @@ class DynamoDBService:
     def __init__(self,
                  region_name: Optional[str] = None,
                  threat_table_name: str = "threat_intelligence",
-                 metadata_table_name: str = "ingestion_metadata"):
+                 metadata_table_name: str = "ingestion_metadata",
+                 enable_vector_indexing: bool = False):
         self.region_name = region_name or settings.AWS_REGION
         self._dynamodb = boto3.resource("dynamodb", region_name=self.region_name)
         self._threat_table = self._dynamodb.Table(threat_table_name)
         self._metadata_table = self._dynamodb.Table(metadata_table_name)
         # Initialize Secrets Manager client
         self._secrets_manager = boto3.client("secretsmanager", region_name=self.region_name)
+        # Optional vector indexing
+        self._enable_vector_indexing = enable_vector_indexing
+        self._embedding_service: Optional[EmbeddingService] = None
+        self._vector_store: Optional[VectorStoreService] = None
+        if self._enable_vector_indexing:
+            try:
+                self._embedding_service = EmbeddingService()
+                self._vector_store = VectorStoreService()
+                logger.info("Vector indexing enabled: %s -> %s", self._embedding_service.info(), settings.VECTOR_DB_PROVIDER)
+            except Exception as e:
+                logger.error(f"Failed to initialize vector indexing services: {e}")
+                self._enable_vector_indexing = False
 
     async def store_threat_data(self, item: Dict[str, Any]) -> bool:
         """Store a single structured threat item.
@@ -40,6 +55,12 @@ class DynamoDBService:
             # Clean and normalize the data before storage
             cleaned_item = await self.clean_and_normalize_threat_data(item)
             self._threat_table.put_item(Item=cleaned_item)
+            # Optionally index into vector DB
+            if self._enable_vector_indexing:
+                try:
+                    await self._index_item_in_vector_db(cleaned_item)
+                except Exception as e:
+                    logger.error(f"Vector indexing failed for item {cleaned_item.get('id')}: {e}")
             return True
         except ClientError as e:
             logger.error(f"Failed to store threat data in DynamoDB: {e}")
@@ -82,11 +103,88 @@ class DynamoDBService:
                 failed_items.extend(batch)
                 success_count -= len(batch)
         
+        # Index to vector DB in larger batches where possible
+        if self._enable_vector_indexing and cleaned_items:
+            try:
+                await self._index_items_in_vector_db(cleaned_items)
+            except Exception as e:
+                logger.error(f"Vector indexing failed for batch: {e}")
+        
         return {
             "successful": success_count,
             "failed": len(failed_items),
             "total_processed": len(items)
         }
+
+    async def _index_item_in_vector_db(self, item: Dict[str, Any]) -> None:
+        if not (self._embedding_service and self._vector_store):
+            return
+        text = self._build_embedding_text(item)
+        if not text:
+            return
+        vector = await self._embedding_service.embed_text(text)
+        metadata = self._build_vector_metadata(item)
+        _id = item.get("id") or self._generate_threat_id(item)
+        await self._vector_store.upsert_vectors(vectors=[vector], ids=[_id], metadatas=[metadata])
+
+    async def _index_items_in_vector_db(self, items: List[Dict[str, Any]]) -> None:
+        if not (self._embedding_service and self._vector_store):
+            return
+        texts: List[str] = []
+        ids: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        for it in items:
+            text = self._build_embedding_text(it)
+            if not text:
+                continue
+            texts.append(text)
+            ids.append(it.get("id") or self._generate_threat_id(it))
+            metadatas.append(self._build_vector_metadata(it))
+        if not texts:
+            return
+        vectors = await self._embedding_service.embed_texts(texts)
+        await self._vector_store.upsert_vectors(vectors=vectors, ids=ids, metadatas=metadatas)
+
+    def _build_embedding_text(self, item: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        def add(val: Optional[str]):
+            if val:
+                parts.append(str(val))
+        add(item.get("indicator"))
+        add(item.get("description"))
+        add(item.get("threat_type"))
+        add(item.get("category"))
+        add(item.get("severity"))
+        add(item.get("source"))
+        add(item.get("domain"))
+        add(item.get("url"))
+        add(item.get("ip_address"))
+        # CVE related
+        add(item.get("cve_id"))
+        cve_data = item.get("cve_data") or {}
+        if isinstance(cve_data, dict):
+            add(cve_data.get("description"))
+            # include affected software/hardware lists
+            for key in ["affected_software", "affected_hardware"]:
+                vals = cve_data.get(key) or []
+                if isinstance(vals, list):
+                    parts.extend([str(v) for v in vals])
+        return " \n".join([p for p in parts if p])
+
+    def _build_vector_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        md: Dict[str, Any] = {
+            "id": item.get("id"),
+            "indicator": item.get("indicator"),
+            "threat_type": item.get("threat_type"),
+            "category": item.get("category"),
+            "severity": item.get("severity"),
+            "source": item.get("source"),
+            "cve_id": item.get("cve_id"),
+            "first_seen": item.get("first_seen"),
+            "last_seen": item.get("last_seen"),
+        }
+        # Remove None values
+        return {k: v for k, v in md.items() if v is not None}
 
     # Data Cleaning and Normalization Methods
 

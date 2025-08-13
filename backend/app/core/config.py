@@ -44,6 +44,29 @@ class Settings(BaseSettings):
     MODEL_PATH: str = "./ml/models/"
     ML_ENABLED: bool = True
     
+    # Embeddings
+    EMBEDDING_PROVIDER: str = "huggingface"  # Options: "openai", "huggingface"
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    HF_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    HF_API_TOKEN: Optional[str] = None
+
+    # Vector Database
+    VECTOR_DB_PROVIDER: str = "pinecone"  # Options: "pinecone", "weaviate"
+    VECTOR_INDEX_NAME: str = "threat-intel"
+    VECTOR_NAMESPACE: str = "default"
+    VECTOR_DIMENSION: Optional[int] = None  # If None, will infer from first vector
+    VECTOR_METRIC: str = "cosine"  # cosine | dotproduct | euclidean
+
+    # Pinecone
+    PINECONE_API_KEY: Optional[str] = None
+    PINECONE_ENVIRONMENT: Optional[str] = None  # e.g., "us-east-1-gcp" (legacy clients)
+
+    # Weaviate
+    WEAVIATE_URL: Optional[str] = None  # e.g., "https://your-weaviate.instance"
+    WEAVIATE_API_KEY: Optional[str] = None
+    WEAVIATE_CLASS_NAME: str = "ThreatIntel"
+    
     # Threat Intelligence Sources
     THREAT_FEEDS: List[str] = [
         "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/alienvault_reputation.ipset",

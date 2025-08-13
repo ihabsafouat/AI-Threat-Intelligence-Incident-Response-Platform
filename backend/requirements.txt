@@ -38,6 +38,12 @@ spacy==3.7.2
 transformers==4.35.2
 torch==2.1.1
 tensorflow==2.15.0
+sentence-transformers==2.2.2
+openai>=1.30.0,<2
+
+# Vector databases
+pinecone-client==2.2.4
+weaviate-client==4.6.3
 
 # Threat intelligence specific
 cve-search==1.0.0
