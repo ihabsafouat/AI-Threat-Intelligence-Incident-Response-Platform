@@ -1,0 +1,292 @@
+name: Test and Quality Checks
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+
+jobs:
+  # Backend tests
+  test-backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install Python dependencies
+      run: |
+        cd backend
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio pytest-mock flake8 black isort mypy bandit safety
+
+    - name: Run linting checks
+      run: |
+        cd backend
+        echo "Running flake8..."
+        flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics --max-line-length=88
+        echo "Running black check..."
+        black --check app/ --diff
+        echo "Running isort check..."
+        isort --check-only app/ --diff
+        echo "Running mypy..."
+        mypy app/ --ignore-missing-imports
+
+    - name: Run security checks
+      run: |
+        cd backend
+        echo "Running bandit security scan..."
+        bandit -r app/ -f json -o bandit-report.json || true
+        echo "Running safety check..."
+        safety check --json --output safety-report.json || true
+
+    - name: Run tests with coverage
+      run: |
+        cd backend
+        pytest --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing --cov-fail-under=80
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./backend/coverage.xml
+        flags: backend
+        name: backend-coverage
+        fail_ci_if_error: false
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-coverage-report
+        path: backend/htmlcov/
+        retention-days: 30
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-security-reports
+        path: |
+          backend/bandit-report.json
+          backend/safety-report.json
+        retention-days: 30
+
+  # Frontend tests
+  test-frontend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run linting
+      run: |
+        cd frontend
+        npm run lint
+
+    - name: Run type checking
+      run: |
+        cd frontend
+        npm run type-check
+
+    - name: Run tests
+      run: |
+        cd frontend
+        npm test -- --coverage --watchAll=false --passWithNoTests
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./frontend/coverage/lcov.info
+        flags: frontend
+        name: frontend-coverage
+        fail_ci_if_error: false
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-coverage-report
+        path: frontend/coverage/
+        retention-days: 30
+
+  # Integration tests
+  integration-tests:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        cd backend
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio httpx
+
+    - name: Run integration tests
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        REDIS_URL: redis://localhost:6379
+        TESTING: true
+      run: |
+        cd backend
+        pytest tests/integration/ -v --tb=short
+
+  # Performance tests
+  performance-tests:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install performance testing tools
+      run: |
+        pip install locust pytest-benchmark
+
+    - name: Run performance tests
+      run: |
+        cd backend
+        pytest tests/performance/ --benchmark-only --benchmark-sort=mean
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-results
+        path: backend/.pytest_cache/
+        retention-days: 30
+
+  # Dependency vulnerability scan
+  dependency-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Snyk to check for vulnerabilities
+      uses: snyk/actions/python@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high --file=backend/requirements.txt
+
+    - name: Run Snyk to check for vulnerabilities in Node.js
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high --file=frontend/package.json
+
+  # Code quality report
+  code-quality:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download coverage reports
+      uses: actions/download-artifact@v4
+      with:
+        name: backend-coverage-report
+        path: backend-coverage/
+
+    - name: Download frontend coverage reports
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-coverage-report
+        path: frontend-coverage/
+
+    - name: Generate quality report
+      run: |
+        echo "## Code Quality Report" >> quality-report.md
+        echo "" >> quality-report.md
+        echo "### Test Coverage" >> quality-report.md
+        echo "- Backend: $(find backend-coverage/ -name '*.html' | head -1)" >> quality-report.md
+        echo "- Frontend: $(find frontend-coverage/ -name '*.html' | head -1)" >> quality-report.md
+        echo "" >> quality-report.md
+        echo "### Test Results" >> quality-report.md
+        echo "- Backend tests: ${{ needs.test-backend.result }}" >> quality-report.md
+        echo "- Frontend tests: ${{ needs.test-frontend.result }}" >> quality-report.md
+        echo "- Integration tests: ${{ needs.integration-tests.result }}" >> quality-report.md
+
+    - name: Upload quality report
+      uses: actions/upload-artifact@v4
+      with:
+        name: quality-report
+        path: quality-report.md
+        retention-days: 30 

@@ -1,0 +1,245 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ develop ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      service:
+        description: 'Service to deploy (all, api, ingestion, worker, dashboard)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - api
+          - ingestion
+          - worker
+          - dashboard
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Deploy to staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment: staging
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_STAGING }} --region ${{ secrets.AWS_REGION }}
+
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        
+        # Update image tags in Kubernetes manifests
+        sed -i "s|IMAGE_TAG|${{ github.sha }}|g" k8s/staging/*.yaml
+        
+        # Apply manifests
+        kubectl apply -f k8s/staging/
+        
+        # Wait for deployments to be ready
+        kubectl rollout status deployment/threat-intel-api -n threat-intel-staging --timeout=300s
+        kubectl rollout status deployment/threat-intel-ingestion -n threat-intel-staging --timeout=300s
+        kubectl rollout status deployment/threat-intel-worker -n threat-intel-staging --timeout=300s
+        kubectl rollout status deployment/threat-intel-dashboard -n threat-intel-staging --timeout=300s
+
+    - name: Run smoke tests
+      run: |
+        echo "Running smoke tests..."
+        
+        # Wait for services to be ready
+        sleep 30
+        
+        # Test API health endpoint
+        curl -f http://staging-api.threat-intel.example.com/health
+        
+        # Test dashboard
+        curl -f http://staging-dashboard.threat-intel.example.com/
+
+    - name: Notify deployment success
+      if: success()
+      run: |
+        echo "✅ Successfully deployed to staging environment"
+        echo "API: http://staging-api.threat-intel.example.com"
+        echo "Dashboard: http://staging-dashboard.threat-intel.example.com"
+
+    - name: Notify deployment failure
+      if: failure()
+      run: |
+        echo "❌ Deployment to staging failed!"
+        exit 1
+
+  # Deploy to production
+  deploy-production:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    environment: production
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_PRODUCTION }} --region ${{ secrets.AWS_REGION }}
+
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        
+        # Update image tags in Kubernetes manifests
+        sed -i "s|IMAGE_TAG|${{ github.sha }}|g" k8s/production/*.yaml
+        
+        # Apply manifests
+        kubectl apply -f k8s/production/
+        
+        # Wait for deployments to be ready
+        kubectl rollout status deployment/threat-intel-api -n threat-intel-production --timeout=300s
+        kubectl rollout status deployment/threat-intel-ingestion -n threat-intel-production --timeout=300s
+        kubectl rollout status deployment/threat-intel-worker -n threat-intel-production --timeout=300s
+        kubectl rollout status deployment/threat-intel-dashboard -n threat-intel-production --timeout=300s
+
+    - name: Run production tests
+      run: |
+        echo "Running production tests..."
+        
+        # Wait for services to be ready
+        sleep 30
+        
+        # Test API health endpoint
+        curl -f https://api.threat-intel.example.com/health
+        
+        # Test dashboard
+        curl -f https://dashboard.threat-intel.example.com/
+
+    - name: Run performance tests
+      run: |
+        echo "Running performance tests..."
+        
+        # Install performance testing tools
+        pip install locust
+        
+        # Run load tests
+        locust -f tests/performance/locustfile.py \
+          --host=https://api.threat-intel.example.com \
+          --users 50 \
+          --spawn-rate 5 \
+          --run-time 2m \
+          --headless \
+          --html=performance-report.html
+
+    - name: Upload performance report
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-report
+        path: performance-report.html
+        retention-days: 30
+
+    - name: Notify deployment success
+      if: success()
+      run: |
+        echo "✅ Successfully deployed to production environment"
+        echo "API: https://api.threat-intel.example.com"
+        echo "Dashboard: https://dashboard.threat-intel.example.com"
+
+    - name: Notify deployment failure
+      if: failure()
+      run: |
+        echo "❌ Deployment to production failed!"
+        exit 1
+
+  # Rollback deployment
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v'))
+    environment: ${{ github.ref == 'refs/heads/develop' && 'staging' || 'production' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        if [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_STAGING }} --region ${{ secrets.AWS_REGION }}
+        else
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_PRODUCTION }} --region ${{ secrets.AWS_REGION }}
+        fi
+
+    - name: Rollback deployment
+      run: |
+        echo "Rolling back deployment..."
+        
+        if [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+          kubectl rollout undo deployment/threat-intel-api -n threat-intel-staging
+          kubectl rollout undo deployment/threat-intel-ingestion -n threat-intel-staging
+          kubectl rollout undo deployment/threat-intel-worker -n threat-intel-staging
+          kubectl rollout undo deployment/threat-intel-dashboard -n threat-intel-staging
+        else
+          kubectl rollout undo deployment/threat-intel-api -n threat-intel-production
+          kubectl rollout undo deployment/threat-intel-ingestion -n threat-intel-production
+          kubectl rollout undo deployment/threat-intel-worker -n threat-intel-production
+          kubectl rollout undo deployment/threat-intel-dashboard -n threat-intel-production
+        fi
+
+    - name: Notify rollback
+      run: |
+        echo "🔄 Deployment rolled back successfully"
+
+  # Health check monitoring
+  health-check:
+    needs: [deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: always() && (success() || failure())
+
+    steps:
+    - name: Check staging health
+      if: github.ref == 'refs/heads/develop'
+      run: |
+        echo "Checking staging environment health..."
+        curl -f http://staging-api.threat-intel.example.com/health || echo "Staging API health check failed"
+        curl -f http://staging-dashboard.threat-intel.example.com/ || echo "Staging dashboard health check failed"
+
+    - name: Check production health
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        echo "Checking production environment health..."
+        curl -f https://api.threat-intel.example.com/health || echo "Production API health check failed"
+        curl -f https://dashboard.threat-intel.example.com/ || echo "Production dashboard health check failed" 

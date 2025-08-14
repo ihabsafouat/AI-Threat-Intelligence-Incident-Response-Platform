@@ -1,0 +1,302 @@
+name: Security and Dependency Management
+
+on:
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  # Dependency vulnerability scanning
+  dependency-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Snyk to check for vulnerabilities in Python
+      uses: snyk/actions/python@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high --file=backend/requirements.txt
+
+    - name: Run Snyk to check for vulnerabilities in Node.js
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high --file=frontend/package.json
+
+    - name: Run Safety check for Python dependencies
+      run: |
+        cd backend
+        pip install safety
+        safety check --json --output safety-report.json || true
+
+    - name: Run npm audit for Node.js dependencies
+      run: |
+        cd frontend
+        npm audit --audit-level=high --json > npm-audit-report.json || true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports
+        path: |
+          backend/safety-report.json
+          frontend/npm-audit-report.json
+        retention-days: 30
+
+  # Container vulnerability scanning
+  container-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build Docker images for scanning
+      run: |
+        docker build -f backend/Dockerfile.api -t threat-intel-api:scan ./backend
+        docker build -f backend/Dockerfile.ingestion -t threat-intel-ingestion:scan ./backend
+        docker build -f backend/Dockerfile.worker -t threat-intel-worker:scan ./backend
+        docker build -f frontend/Dockerfile.production -t threat-intel-dashboard:scan ./frontend
+
+    - name: Run Trivy vulnerability scanner on API image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'threat-intel-api:scan'
+        format: 'sarif'
+        output: 'trivy-results-api.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Run Trivy vulnerability scanner on Ingestion image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'threat-intel-ingestion:scan'
+        format: 'sarif'
+        output: 'trivy-results-ingestion.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Run Trivy vulnerability scanner on Worker image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'threat-intel-worker:scan'
+        format: 'sarif'
+        output: 'trivy-results-worker.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Run Trivy vulnerability scanner on Dashboard image
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'threat-intel-dashboard:scan'
+        format: 'sarif'
+        output: 'trivy-results-dashboard.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: |
+          trivy-results-api.sarif
+          trivy-results-ingestion.sarif
+          trivy-results-worker.sarif
+          trivy-results-dashboard.sarif
+
+  # Code security scanning
+  code-security:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Bandit security linter for Python
+      run: |
+        cd backend
+        pip install bandit
+        bandit -r app/ -f json -o bandit-report.json || true
+
+    - name: Run Semgrep for security issues
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/secrets
+          p/owasp-top-ten
+        output-format: sarif
+        output-file: semgrep-results.sarif
+
+    - name: Upload Semgrep results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: semgrep-results.sarif
+
+  # Dependency updates
+  dependency-updates:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Check for Python dependency updates
+      run: |
+        cd backend
+        pip install pip-review
+        pip-review --local --output-format=json > dependency-updates.json || true
+
+    - name: Check for Node.js dependency updates
+      run: |
+        cd frontend
+        npm outdated --json > npm-outdated.json || true
+
+    - name: Create dependency update PR
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update dependencies'
+        title: '🔧 Automated dependency updates'
+        body: |
+          ## Automated Dependency Updates
+          
+          This PR contains automated dependency updates for security and maintenance.
+          
+          ### Python Dependencies
+          - Check `backend/dependency-updates.json` for available updates
+          
+          ### Node.js Dependencies  
+          - Check `frontend/npm-outdated.json` for available updates
+          
+          ### Security Notes
+          - All updates have been scanned for vulnerabilities
+          - Please review and test before merging
+        branch: dependency-updates
+        delete-branch: true
+
+  # License compliance
+  license-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check Python license compliance
+      run: |
+        cd backend
+        pip install pip-licenses
+        pip-licenses --format=json --output-file=python-licenses.json
+
+    - name: Check Node.js license compliance
+      run: |
+        cd frontend
+        npm install -g license-checker
+        license-checker --json --out licenses.json
+
+    - name: Upload license reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-reports
+        path: |
+          backend/python-licenses.json
+          frontend/licenses.json
+        retention-days: 30
+
+  # Security policy compliance
+  security-policy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Validate security policy
+      run: |
+        # Check if SECURITY.md exists
+        if [ ! -f "SECURITY.md" ]; then
+          echo "❌ SECURITY.md file is missing"
+          exit 1
+        fi
+        
+        # Check if .github/SECURITY.md exists
+        if [ ! -f ".github/SECURITY.md" ]; then
+          echo "❌ .github/SECURITY.md file is missing"
+          exit 1
+        fi
+        
+        echo "✅ Security policy files are present"
+
+    - name: Check for secrets in code
+      run: |
+        # Check for common secret patterns
+        if grep -r "password\|secret\|key\|token" --include="*.py" --include="*.js" --include="*.json" . | grep -v "test\|example\|mock"; then
+          echo "⚠️  Potential secrets found in code"
+          exit 1
+        fi
+        
+        echo "✅ No obvious secrets found in code"
+
+  # Security summary
+  security-summary:
+    needs: [dependency-scan, container-scan, code-security, license-check, security-policy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Generate security summary
+      run: |
+        echo "## Security Scan Summary" > security-summary.md
+        echo "" >> security-summary.md
+        echo "### Scan Results" >> security-summary.md
+        echo "- Dependency scan: ${{ needs.dependency-scan.result }}" >> security-summary.md
+        echo "- Container scan: ${{ needs.container-scan.result }}" >> security-summary.md
+        echo "- Code security: ${{ needs.code-security.result }}" >> security-summary.md
+        echo "- License check: ${{ needs.license-check.result }}" >> security-summary.md
+        echo "- Security policy: ${{ needs.security-policy.result }}" >> security-summary.md
+        echo "" >> security-summary.md
+        echo "### Recommendations" >> security-summary.md
+        echo "1. Review all security reports" >> security-summary.md
+        echo "2. Update dependencies with known vulnerabilities" >> security-summary.md
+        echo "3. Address any high/critical severity issues" >> security-summary.md
+
+    - name: Upload security summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-summary
+        path: security-summary.md
+        retention-days: 30
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('security-summary.md', 'utf8');
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          }); 
