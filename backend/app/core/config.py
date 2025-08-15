@@ -34,6 +34,27 @@ class Settings(BaseSettings):
     # Trusted hosts
     ALLOWED_HOSTS: List[str] = ["*"]
     
+    # AWS Configuration
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_REGION: str = "us-east-1"
+    S3_BUCKET: Optional[str] = None
+    KMS_KEY_ID: Optional[str] = None
+    
+    # Logging Configuration
+    ENABLE_CLOUDWATCH_LOGGING: bool = True
+    ENABLE_DATABASE_LOGGING: bool = True
+    LOG_SENSITIVE_DATA: bool = False
+    LOG_LEVEL: str = "INFO"
+    LOG_RETENTION_DAYS: int = 30
+    
+    # API Logging Configuration
+    API_LOG_REQUESTS: bool = True
+    API_LOG_RESPONSES: bool = True
+    API_LOG_ERRORS: bool = True
+    API_LOG_PERFORMANCE: bool = True
+    API_LOG_SLOW_REQUEST_THRESHOLD_MS: float = 1000.0  # 1 second
+    
     # External APIs
     CVE_API_KEY: Optional[str] = None
     THREAT_FEED_API_KEY: Optional[str] = None

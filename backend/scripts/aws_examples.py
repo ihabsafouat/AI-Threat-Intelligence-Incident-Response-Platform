@@ -2,7 +2,7 @@
 """
 AWS Services Examples
 
-This script demonstrates how to use the AWS services for threat intelligence operations.
+This script demonstrates how to use the AWS services for threat intelligence operations with KMS encryption.
 """
 
 import os
@@ -22,12 +22,24 @@ from app.services.aws import (
 
 
 def example_s3_operations():
-    """Example S3 operations for threat data storage."""
-    print("=== S3 Operations Example ===")
+    """Example S3 operations for threat data storage with KMS encryption."""
+    print("=== S3 Operations Example with KMS Encryption ===")
     
-    # Initialize AWS config and S3 service
+    # Initialize AWS config and S3 service with KMS encryption
     config = AWSConfig.from_env()
-    s3_service = S3Service(config, bucket_name="threat-intelligence-bucket")
+    
+    # Get KMS key ID from environment or use default
+    kms_key_id = os.getenv('KMS_KEY_ID')
+    if kms_key_id:
+        print(f"Using KMS encryption with key: {kms_key_id}")
+    else:
+        print("No KMS key ID provided, using AES256 encryption")
+    
+    s3_service = S3Service(
+        config, 
+        bucket_name="threat-intelligence-bucket",
+        kms_key_id=kms_key_id
+    )
     
     # Example threat data
     threat_data = {
@@ -45,8 +57,8 @@ def example_s3_operations():
         }
     }
     
-    # Upload threat data to S3
-    print("Uploading threat data to S3...")
+    # Upload threat data to S3 with KMS encryption
+    print("Uploading threat data to S3 with KMS encryption...")
     result = s3_service.upload_threat_data(
         threat_data=threat_data,
         threat_id="THREAT-001",
@@ -55,7 +67,11 @@ def example_s3_operations():
     )
     
     if result['success']:
+        encryption_type = result.get('encryption', 'Unknown')
+        kms_key_used = result.get('kms_key_id', 'None')
         print(f"✅ Successfully uploaded threat data: {result['key']}")
+        print(f"   Encryption: {encryption_type}")
+        print(f"   KMS Key ID: {kms_key_used}")
         
         # Retrieve the threat data
         print("Retrieving threat data from S3...")
@@ -67,6 +83,27 @@ def example_s3_operations():
             print(f"❌ Failed to retrieve threat data: {retrieved['error']}")
     else:
         print(f"❌ Failed to upload threat data: {result['error']}")
+
+
+def example_kms_operations():
+    """Example KMS operations for key management."""
+    print("\n=== KMS Operations Example ===")
+    
+    # Initialize AWS config
+    config = AWSConfig.from_env()
+    
+    # Get KMS key information
+    kms_key_info = config.get_kms_key_info()
+    if kms_key_info:
+        print("✅ KMS Key Information:")
+        print(f"   Key ID: {kms_key_info['key_id']}")
+        print(f"   Key ARN: {kms_key_info['key_arn']}")
+        print(f"   Description: {kms_key_info['description']}")
+        print(f"   State: {kms_key_info['key_state']}")
+        print(f"   Usage: {kms_key_info['key_usage']}")
+        print(f"   Created: {kms_key_info['creation_date']}")
+    else:
+        print("❌ No KMS key information available")
 
 
 def example_dynamodb_operations():
@@ -292,85 +329,124 @@ def example_lambda_operations():
         print(f"❌ Failed to invoke threat analysis: {analysis_result['error']}")
 
 
-def example_integrated_workflow():
-    """Example integrated workflow using multiple AWS services."""
-    print("\n=== Integrated Workflow Example ===")
+def example_comprehensive_workflow():
+    """Example comprehensive threat intelligence workflow with KMS encryption."""
+    print("\n=== Comprehensive Workflow Example with KMS Encryption ===")
     
-    # Initialize all AWS services
+    # Initialize AWS config
     config = AWSConfig.from_env()
-    s3_service = S3Service(config, bucket_name="threat-intelligence-bucket")
+    kms_key_id = os.getenv('KMS_KEY_ID')
+    
+    # Initialize services with KMS encryption
+    s3_service = S3Service(config, bucket_name="threat-intelligence-bucket", kms_key_id=kms_key_id)
     dynamodb_service = DynamoDBService(config, table_name="threat-intelligence")
     cloudwatch_service = CloudWatchService(config)
-    ses_service = SESService(config, from_email="threat-intel@yourdomain.com")
-    lambda_service = LambdaService(config)
+    ses_service = SESService(config)
     
-    # Simulate threat detection workflow
-    print("Starting integrated threat detection workflow...")
-    
-    # 1. New threat detected
+    # Example threat data
     threat_data = {
         "threat_id": "THREAT-006",
         "threat_type": "ransomware",
         "severity": "critical",
-        "description": "Ransomware attack in progress",
-        "indicators": ["ransomware-encrypted-files", "ransom-note.txt"],
-        "source": "endpoint_protection",
+        "description": "Ransomware attack targeting healthcare systems",
+        "indicators": ["ransomware-domain.com", "malicious-payload.exe", "192.168.1.200"],
+        "source": "siem_alert",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "details": {
             "ransomware_family": "WannaCry",
-            "affected_files": 1500,
-            "ransom_amount": "$300",
-            "encryption_algorithm": "AES-256"
+            "target_sector": "healthcare",
+            "affected_systems": 50,
+            "ransom_amount": "$500,000"
         }
     }
     
-    # 2. Store threat data in S3
-    print("1. Storing threat data in S3...")
-    s3_result = s3_service.upload_threat_data(threat_data, "THREAT-006", "ransomware")
+    results = {}
     
-    # 3. Store threat record in DynamoDB
+    # 1. Store threat data in S3 with KMS encryption
+    print("1. Storing threat data in S3 with KMS encryption...")
+    s3_result = s3_service.upload_threat_data(threat_data, "THREAT-006", "ransomware")
+    results['s3'] = s3_result
+    
+    if s3_result['success']:
+        encryption_type = s3_result.get('encryption', 'Unknown')
+        print(f"   ✅ S3 Storage: {s3_result['key']} (Encryption: {encryption_type})")
+    else:
+        print(f"   ❌ S3 Storage failed: {s3_result['error']}")
+
+    # 2. Store threat record in DynamoDB
     print("2. Storing threat record in DynamoDB...")
     dynamodb_result = dynamodb_service.create_threat_record(
         threat_data, "THREAT-006", "ransomware", "critical", "endpoint_protection"
     )
-    
-    # 4. Send metrics to CloudWatch
+    results['dynamodb'] = dynamodb_result
+    if dynamodb_result['success']:
+        print(f"   ✅ DynamoDB Record: {dynamodb_result['threat_id']}")
+    else:
+        print(f"   ❌ DynamoDB Record failed: {dynamodb_result['error']}")
+
+    # 3. Send metrics to CloudWatch
     print("3. Sending metrics to CloudWatch...")
-    cloudwatch_result = cloudwatch_service.put_threat_metric(
+    metrics_result = cloudwatch_service.put_threat_metric(
         "ransomware", "critical", 1, "endpoint_protection"
     )
-    
-    # 5. Log the event
+    results['cloudwatch'] = metrics_result
+    if metrics_result['success']:
+        print(f"   ✅ CloudWatch Metrics: {metrics_result['threat_type']}")
+    else:
+        print(f"   ❌ CloudWatch Metrics failed: {metrics_result['error']}")
+
+    # 4. Log the event
     print("4. Logging threat event...")
     log_result = cloudwatch_service.log_threat_event(
         "THREAT-006", "detection", "Ransomware attack detected", "critical"
     )
-    
-    # 6. Invoke analysis Lambda function
+    results['cloudwatch_log'] = log_result
+    if log_result['success']:
+        print(f"   ✅ CloudWatch Event Log: {log_result['event_id']}")
+    else:
+        print(f"   ❌ CloudWatch Event Log failed: {log_result['error']}")
+
+    # 5. Invoke analysis Lambda function
     print("5. Invoking threat analysis...")
     lambda_result = lambda_service.invoke_threat_analysis(threat_data, "advanced")
-    
-    # 7. Send critical alert
+    results['lambda_analysis'] = lambda_result
+    if lambda_result['success']:
+        print(f"   ✅ Lambda Analysis: {lambda_result['status_code']}")
+    else:
+        print(f"   ❌ Lambda Analysis failed: {lambda_result['error']}")
+
+    # 6. Send critical alert
     print("6. Sending critical alert...")
     alert_result = ses_service.send_threat_alert(
         ["incident-response@yourdomain.com", "security-team@yourdomain.com"],
         threat_data, "critical", "critical"
     )
-    
-    # Summary
+    results['ses_alert'] = alert_result
+    if alert_result['success']:
+        print(f"   ✅ Email Alert: {alert_result['message_id']}")
+    else:
+        print(f"   ❌ Email Alert failed: {alert_result['error']}")
+
+    # Print summary
     print("\n=== Workflow Summary ===")
-    results = [
-        ("S3 Storage", s3_result['success']),
-        ("DynamoDB Record", dynamodb_result['success']),
-        ("CloudWatch Metrics", cloudwatch_result['success']),
-        ("Event Logging", log_result['success']),
-        ("Lambda Analysis", lambda_result['success']),
+    workflow_results = [
+        ("S3 Storage with KMS", s3_result['success']),
+        ("DynamoDB Storage", dynamodb_result['success']),
+        ("CloudWatch Metrics", metrics_result['success']),
         ("Email Alert", alert_result['success'])
     ]
     
-    for step, success in results:
+    for service, success in workflow_results:
         status = "✅" if success else "❌"
-        print(f"{status} {step}")
+        print(f"{status} {service}")
+    
+    # Print encryption details
+    if s3_result['success']:
+        encryption_type = s3_result.get('encryption', 'Unknown')
+        kms_key_used = s3_result.get('kms_key_id', 'None')
+        print(f"\n🔐 Encryption Details:")
+        print(f"   Type: {encryption_type}")
+        print(f"   KMS Key ID: {kms_key_used}")
 
 
 def main():
@@ -381,13 +457,14 @@ def main():
     try:
         # Run individual service examples
         example_s3_operations()
+        example_kms_operations() # Added KMS example
         example_dynamodb_operations()
         example_cloudwatch_operations()
         example_ses_operations()
         example_lambda_operations()
         
         # Run integrated workflow example
-        example_integrated_workflow()
+        example_comprehensive_workflow()
         
         print("\n" + "=" * 60)
         print("✅ All examples completed successfully!")

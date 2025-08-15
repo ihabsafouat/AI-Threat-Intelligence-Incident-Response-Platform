@@ -7,6 +7,8 @@ from app.core.config import settings
 from app.api.v1.api import api_router
 from app.core.database import engine
 from app.models import Base
+from app.models.api_logs import APILog, APIMetrics, APIPerformanceAlert
+from app.middleware.logging_middleware import LoggingMiddleware, RequestIDMiddleware, PerformanceMiddleware
 
 
 @asynccontextmanager
@@ -18,8 +20,13 @@ async def lifespan(app: FastAPI):
     # Create database tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Create API logging tables
+        await conn.run_sync(APILog.__table__.create, checkfirst=True)
+        await conn.run_sync(APIMetrics.__table__.create, checkfirst=True)
+        await conn.run_sync(APIPerformanceAlert.__table__.create, checkfirst=True)
     
     print("✅ Database tables created")
+    print("📊 API logging enabled")
     print("🎯 Threat Intelligence Platform is ready!")
     
     yield
@@ -36,6 +43,11 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+# Add logging middleware first (before other middleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(PerformanceMiddleware)
 
 # Security middleware
 app.add_middleware(
@@ -63,7 +75,12 @@ async def root():
         "message": "AI Threat Intelligence & Incident Response Platform",
         "version": "1.0.0",
         "status": "operational",
-        "docs": "/docs"
+        "docs": "/docs",
+        "features": {
+            "api_logging": "enabled",
+            "cloudwatch_integration": "enabled" if settings.AWS_ACCESS_KEY_ID else "disabled",
+            "database_logging": "enabled"
+        }
     }
 
 
@@ -72,7 +89,12 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": "2024-01-01T00:00:00Z"
+        "timestamp": "2024-01-01T00:00:00Z",
+        "services": {
+            "api": "operational",
+            "database": "operational",
+            "logging": "operational"
+        }
     }
 
 

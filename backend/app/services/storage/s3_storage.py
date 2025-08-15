@@ -1,6 +1,6 @@
 """
 AWS S3 Storage Service for Raw Data
-Provides comprehensive S3 storage capabilities for threat intelligence raw data.
+Provides comprehensive S3 storage capabilities for threat intelligence raw data with KMS encryption.
 """
 
 import json
@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 import asyncio
+import os
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -25,6 +26,7 @@ class S3StorageConfig(BaseModel):
     """S3 Storage Configuration"""
     bucket_name: str
     region: str = "us-east-1"
+    kms_key_id: Optional[str] = None
     folder_structure: Dict[str, str] = {
         "raw_data": "raw/",
         "processed_data": "processed/",
@@ -44,15 +46,22 @@ class S3StorageConfig(BaseModel):
 
 
 class S3StorageService:
-    """Comprehensive S3 storage service for raw data"""
+    """Comprehensive S3 storage service for raw data with KMS encryption"""
     
     def __init__(self, config: Optional[S3StorageConfig] = None):
         self.config = config or S3StorageConfig(
-            bucket_name=settings.S3_BUCKET or "threat-intelligence-platform"
+            bucket_name=settings.S3_BUCKET or "threat-intelligence-platform",
+            kms_key_id=os.getenv('KMS_KEY_ID')
         )
         self.s3_client = boto3.client('s3', region_name=self.config.region)
         self.s3_resource = boto3.resource('s3', region_name=self.config.region)
         self.bucket = self.s3_resource.Bucket(self.config.bucket_name)
+        
+        # Log encryption configuration
+        if self.config.kms_key_id:
+            logger.info(f"Using KMS encryption with key: {self.config.kms_key_id}")
+        else:
+            logger.warning("No KMS key ID provided, falling back to AES256 encryption")
         
         # Ensure bucket exists
         self._ensure_bucket_exists()
@@ -105,16 +114,31 @@ class S3StorageService:
             
             # Configure encryption
             if self.config.encryption_enabled:
-                self.s3_client.put_bucket_encryption(
-                    Bucket=self.config.bucket_name,
-                    ServerSideEncryptionConfiguration={
-                        'Rules': [{
-                            'ApplyServerSideEncryptionByDefault': {
-                                'SSEAlgorithm': 'AES256'
-                            }
-                        }]
-                    }
-                )
+                if self.config.kms_key_id:
+                    # Use KMS encryption
+                    self.s3_client.put_bucket_encryption(
+                        Bucket=self.config.bucket_name,
+                        ServerSideEncryptionConfiguration={
+                            'Rules': [{
+                                'ApplyServerSideEncryptionByDefault': {
+                                    'SSEAlgorithm': 'aws:kms',
+                                    'KMSMasterKeyID': self.config.kms_key_id
+                                }
+                            }]
+                        }
+                    )
+                else:
+                    # Use AES256 encryption
+                    self.s3_client.put_bucket_encryption(
+                        Bucket=self.config.bucket_name,
+                        ServerSideEncryptionConfiguration={
+                            'Rules': [{
+                                'ApplyServerSideEncryptionByDefault': {
+                                    'SSEAlgorithm': 'AES256'
+                                }
+                            }]
+                        }
+                    )
             
             # Configure lifecycle policies
             self._setup_lifecycle_policies()
@@ -160,7 +184,7 @@ class S3StorageService:
         source: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Store raw data in S3 with proper organization"""
+        """Store raw data in S3 with proper organization and KMS encryption"""
         try:
             # Generate file key
             timestamp = datetime.utcnow().strftime('%Y/%m/%d/%H%M%S')
@@ -192,7 +216,7 @@ class S3StorageService:
                 compressed_data = json_data.encode('utf-8')
                 content_encoding = None
             
-            # Upload to S3
+            # Prepare upload parameters with KMS encryption
             upload_params = {
                 'Bucket': self.config.bucket_name,
                 'Key': file_key,
@@ -209,9 +233,18 @@ class S3StorageService:
             if content_encoding:
                 upload_params['ContentEncoding'] = content_encoding
             
+            # Add encryption parameters
+            if self.config.encryption_enabled:
+                if self.config.kms_key_id:
+                    upload_params['ServerSideEncryption'] = 'aws:kms'
+                    upload_params['SSEKMSKeyId'] = self.config.kms_key_id
+                else:
+                    upload_params['ServerSideEncryption'] = 'AES256'
+            
             self.s3_client.put_object(**upload_params)
             
-            logger.info(f"Successfully stored raw data: {file_key}")
+            encryption_type = 'KMS' if self.config.kms_key_id and self.config.encryption_enabled else 'AES256' if self.config.encryption_enabled else 'None'
+            logger.info(f"Successfully stored raw data: {file_key} with {encryption_type} encryption")
             return file_key
             
         except Exception as e:
@@ -225,7 +258,7 @@ class S3StorageService:
         processing_id: str,
         metadata: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Store processed data in S3"""
+        """Store processed data in S3 with KMS encryption"""
         try:
             timestamp = datetime.utcnow().strftime('%Y/%m/%d/%H%M%S')
             file_key = f"{self.config.folder_structure['processed_data']}{data_type}/{processing_id}_{timestamp}.json"
@@ -242,19 +275,31 @@ class S3StorageService:
             
             json_data = json.dumps(storage_data, default=str, indent=2)
             
-            self.s3_client.put_object(
-                Bucket=self.config.bucket_name,
-                Key=file_key,
-                Body=json_data.encode('utf-8'),
-                ContentType='application/json',
-                Metadata={
+            # Prepare upload parameters with KMS encryption
+            upload_params = {
+                'Bucket': self.config.bucket_name,
+                'Key': file_key,
+                'Body': json_data.encode('utf-8'),
+                'ContentType': 'application/json',
+                'Metadata': {
                     'data_type': data_type,
                     'processing_id': processing_id,
                     'processing_timestamp': datetime.utcnow().isoformat()
                 }
-            )
+            }
             
-            logger.info(f"Successfully stored processed data: {file_key}")
+            # Add encryption parameters
+            if self.config.encryption_enabled:
+                if self.config.kms_key_id:
+                    upload_params['ServerSideEncryption'] = 'aws:kms'
+                    upload_params['SSEKMSKeyId'] = self.config.kms_key_id
+                else:
+                    upload_params['ServerSideEncryption'] = 'AES256'
+            
+            self.s3_client.put_object(**upload_params)
+            
+            encryption_type = 'KMS' if self.config.kms_key_id and self.config.encryption_enabled else 'AES256' if self.config.encryption_enabled else 'None'
+            logger.info(f"Successfully stored processed data: {file_key} with {encryption_type} encryption")
             return file_key
             
         except Exception as e:

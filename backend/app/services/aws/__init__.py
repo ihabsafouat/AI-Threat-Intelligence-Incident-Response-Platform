@@ -9,6 +9,7 @@ from .dynamodb_service import DynamoDBService
 from .cloudwatch_service import CloudWatchService
 from .ses_service import SESService
 from .lambda_service import LambdaService
+from .kms_service import KMSService
 from .config import AWSConfig
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     'CloudWatchService',
     'SESService',
     'LambdaService',
+    'KMSService',
     'AWSConfig'
 ] 

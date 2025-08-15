@@ -1,7 +1,7 @@
 """
 S3 Service Module
 
-Handles file uploads, downloads, and management in Amazon S3.
+Handles file uploads, downloads, and management in Amazon S3 with KMS encryption.
 """
 
 import os
@@ -21,23 +21,31 @@ logger = logging.getLogger(__name__)
 
 
 class S3Service:
-    """Amazon S3 Service for file operations"""
+    """Amazon S3 Service for file operations with KMS encryption"""
     
-    def __init__(self, config: AWSConfig, bucket_name: Optional[str] = None):
+    def __init__(self, config: AWSConfig, bucket_name: Optional[str] = None, kms_key_id: Optional[str] = None):
         """
         Initialize S3 service.
         
         Args:
             config: AWS configuration
             bucket_name: S3 bucket name (defaults to environment variable)
+            kms_key_id: KMS key ID for encryption (defaults to environment variable)
         """
         self.config = config
         self.bucket_name = bucket_name or os.getenv('S3_BUCKET')
+        self.kms_key_id = kms_key_id or os.getenv('KMS_KEY_ID')
         self.s3_client = config.get_client('s3')
         self.s3_resource = config.get_resource('s3')
         
         if not self.bucket_name:
             raise ValueError("S3 bucket name is required")
+        
+        # Log encryption configuration
+        if self.kms_key_id:
+            logger.info(f"Using KMS encryption with key: {self.kms_key_id}")
+        else:
+            logger.warning("No KMS key ID provided, falling back to AES256 encryption")
     
     def upload_file(
         self,
@@ -48,7 +56,7 @@ class S3Service:
         encrypt: bool = True
     ) -> Dict[str, Any]:
         """
-        Upload a file to S3.
+        Upload a file to S3 with KMS encryption.
         
         Args:
             file_path: Local file path
@@ -65,7 +73,11 @@ class S3Service:
             if content_type:
                 extra_args['ContentType'] = content_type
             if encrypt:
-                extra_args['ServerSideEncryption'] = 'AES256'
+                if self.kms_key_id:
+                    extra_args['ServerSideEncryption'] = 'aws:kms'
+                    extra_args['SSEKMSKeyId'] = self.kms_key_id
+                else:
+                    extra_args['ServerSideEncryption'] = 'AES256'
             if metadata:
                 extra_args['Metadata'] = metadata
             
@@ -76,13 +88,16 @@ class S3Service:
                 ExtraArgs=extra_args
             )
             
-            logger.info(f"Successfully uploaded {file_path} to s3://{self.bucket_name}/{s3_key}")
+            encryption_type = 'KMS' if self.kms_key_id and encrypt else 'AES256' if encrypt else 'None'
+            logger.info(f"Successfully uploaded {file_path} to s3://{self.bucket_name}/{s3_key} with {encryption_type} encryption")
             
             return {
                 'success': True,
                 'bucket': self.bucket_name,
                 'key': s3_key,
-                'size': os.path.getsize(file_path)
+                'size': os.path.getsize(file_path),
+                'encryption': encryption_type,
+                'kms_key_id': self.kms_key_id if self.kms_key_id and encrypt else None
             }
             
         except (ClientError, NoCredentialsError) as e:
@@ -97,7 +112,7 @@ class S3Service:
         compress: bool = True
     ) -> Dict[str, Any]:
         """
-        Upload threat intelligence data to S3.
+        Upload threat intelligence data to S3 with KMS encryption.
         
         Args:
             threat_data: Threat data dictionary
@@ -136,17 +151,27 @@ class S3Service:
                 content_type = 'application/json'
                 data_to_upload = json_data.encode('utf-8')
             
-            # Upload to S3
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=s3_key,
-                Body=data_to_upload,
-                ContentType=content_type,
-                Metadata=metadata,
-                ServerSideEncryption='AES256'
-            )
+            # Prepare upload parameters with KMS encryption
+            upload_params = {
+                'Bucket': self.bucket_name,
+                'Key': s3_key,
+                'Body': data_to_upload,
+                'ContentType': content_type,
+                'Metadata': metadata
+            }
             
-            logger.info(f"Successfully uploaded threat data {threat_id} to s3://{self.bucket_name}/{s3_key}")
+            # Add encryption parameters
+            if self.kms_key_id:
+                upload_params['ServerSideEncryption'] = 'aws:kms'
+                upload_params['SSEKMSKeyId'] = self.kms_key_id
+            else:
+                upload_params['ServerSideEncryption'] = 'AES256'
+            
+            # Upload to S3
+            self.s3_client.put_object(**upload_params)
+            
+            encryption_type = 'KMS' if self.kms_key_id else 'AES256'
+            logger.info(f"Successfully uploaded threat data {threat_id} to s3://{self.bucket_name}/{s3_key} with {encryption_type} encryption")
             
             return {
                 'success': True,
@@ -156,7 +181,9 @@ class S3Service:
                 'data_type': data_type,
                 'timestamp': timestamp,
                 'compressed': compress,
-                'size': len(data_to_upload)
+                'size': len(data_to_upload),
+                'encryption': encryption_type,
+                'kms_key_id': self.kms_key_id
             }
             
         except Exception as e:

@@ -2,7 +2,7 @@
 """
 AWS Utilities for Threat Intelligence
 
-Quick utility functions for common AWS operations in threat intelligence workflows.
+Quick utility functions for common AWS operations in threat intelligence workflows with KMS encryption.
 """
 
 import os
@@ -24,19 +24,37 @@ from app.services.aws import (
 
 
 class ThreatIntelligenceAWS:
-    """Utility class for threat intelligence AWS operations."""
+    """Utility class for threat intelligence AWS operations with KMS encryption."""
     
-    def __init__(self, region: Optional[str] = None):
-        """Initialize AWS services."""
+    def __init__(self, region: Optional[str] = None, kms_key_id: Optional[str] = None):
+        """
+        Initialize AWS services.
+        
+        Args:
+            region: AWS region
+            kms_key_id: KMS key ID for encryption
+        """
         self.config = AWSConfig.from_env()
         if region:
             self.config.region = region
+        if kms_key_id:
+            self.config.kms_key_id = kms_key_id
         
-        self.s3_service = S3Service(self.config)
+        # Initialize S3 service with KMS encryption
+        self.s3_service = S3Service(
+            self.config, 
+            kms_key_id=self.config.kms_key_id
+        )
         self.dynamodb_service = DynamoDBService(self.config)
         self.cloudwatch_service = CloudWatchService(self.config)
         self.ses_service = SESService(self.config)
         self.lambda_service = LambdaService(self.config)
+        
+        # Log encryption configuration
+        if self.config.kms_key_id:
+            print(f"Using KMS encryption with key: {self.config.kms_key_id}")
+        else:
+            print("Warning: No KMS key ID provided, using AES256 encryption")
     
     def store_threat(self, threat_data: Dict[str, Any], compress: bool = True) -> Dict[str, Any]:
         """
@@ -175,6 +193,7 @@ def main():
     """Main function for command-line interface."""
     parser = argparse.ArgumentParser(description='AWS Utilities for Threat Intelligence')
     parser.add_argument('--region', help='AWS region')
+    parser.add_argument('--kms-key-id', help='KMS key ID for S3 encryption')
     parser.add_argument('--action', required=True, choices=[
         'store', 'search', 'get', 'alert', 'analyze', 'metrics', 'list-files'
     ], help='Action to perform')
@@ -190,7 +209,7 @@ def main():
     args = parser.parse_args()
     
     # Initialize AWS utilities
-    aws_utils = ThreatIntelligenceAWS(args.region)
+    aws_utils = ThreatIntelligenceAWS(args.region, args.kms_key_id)
     
     try:
         if args.action == 'store':

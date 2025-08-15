@@ -31,6 +31,316 @@ class CloudWatchService:
         self.log_group_name = log_group_name or 'threat-intelligence-platform'
         self.cloudwatch_client = config.get_client('cloudwatch')
         self.logs_client = config.get_client('logs')
+        
+        # API logging configuration
+        self.api_log_group = f"{self.log_group_name}/api-logs"
+        self.api_log_stream_prefix = "api-requests"
+    
+    async def log_api_request(
+        self,
+        request_id: str,
+        method: str,
+        path: str,
+        status_code: Optional[int] = None,
+        duration_ms: Optional[float] = None,
+        user_agent: Optional[str] = None,
+        client_ip: Optional[str] = None,
+        request_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Log API request to CloudWatch.
+        
+        Args:
+            request_id: Unique request identifier
+            method: HTTP method
+            path: Request path
+            status_code: Response status code
+            duration_ms: Request duration in milliseconds
+            user_agent: User agent string
+            client_ip: Client IP address
+            request_data: Full request data
+            
+        Returns:
+            Logging result dictionary
+        """
+        try:
+            # Ensure log group exists
+            await self._ensure_log_group_exists(self.api_log_group)
+            
+            # Create log stream name
+            log_stream = f"{self.api_log_stream_prefix}-{datetime.now().strftime('%Y-%m-%d')}"
+            await self._ensure_log_stream_exists(self.api_log_group, log_stream)
+            
+            # Prepare log message
+            log_message = {
+                "event_type": "api_request",
+                "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "duration_ms": duration_ms,
+                "user_agent": user_agent,
+                "client_ip": client_ip,
+                "request_data": request_data
+            }
+            
+            # Put log event
+            self.logs_client.put_log_events(
+                logGroupName=self.api_log_group,
+                logStreamName=log_stream,
+                logEvents=[{
+                    'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'message': json.dumps(log_message, default=str)
+                }]
+            )
+            
+            # Put metrics
+            await self.put_api_metric("api_requests", 1, method=method, path=path)
+            
+            return {
+                'success': True,
+                'request_id': request_id,
+                'log_group': self.api_log_group,
+                'log_stream': log_stream
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to log API request: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def log_api_response(
+        self,
+        request_id: str,
+        method: str,
+        path: str,
+        status_code: int,
+        duration_ms: float,
+        user_agent: Optional[str] = None,
+        client_ip: Optional[str] = None,
+        response_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Log API response to CloudWatch.
+        
+        Args:
+            request_id: Unique request identifier
+            method: HTTP method
+            path: Request path
+            status_code: Response status code
+            duration_ms: Request duration in milliseconds
+            user_agent: User agent string
+            client_ip: Client IP address
+            response_data: Full response data
+            
+        Returns:
+            Logging result dictionary
+        """
+        try:
+            # Ensure log group exists
+            await self._ensure_log_group_exists(self.api_log_group)
+            
+            # Create log stream name
+            log_stream = f"{self.api_log_stream_prefix}-{datetime.now().strftime('%Y-%m-%d')}"
+            await self._ensure_log_stream_exists(self.api_log_group, log_stream)
+            
+            # Prepare log message
+            log_message = {
+                "event_type": "api_response",
+                "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "duration_ms": duration_ms,
+                "user_agent": user_agent,
+                "client_ip": client_ip,
+                "response_data": response_data
+            }
+            
+            # Put log event
+            self.logs_client.put_log_events(
+                logGroupName=self.api_log_group,
+                logStreamName=log_stream,
+                logEvents=[{
+                    'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'message': json.dumps(log_message, default=str)
+                }]
+            )
+            
+            # Put metrics
+            await self.put_api_metric("api_responses", 1, method=method, path=path, status_code=status_code)
+            await self.put_api_metric("api_duration", duration_ms, method=method, path=path, status_code=status_code)
+            
+            return {
+                'success': True,
+                'request_id': request_id,
+                'log_group': self.api_log_group,
+                'log_stream': log_stream
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to log API response: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def log_api_error(
+        self,
+        request_id: str,
+        method: str,
+        path: str,
+        error_type: str,
+        error_message: str,
+        user_agent: Optional[str] = None,
+        client_ip: Optional[str] = None,
+        error_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Log API error to CloudWatch.
+        
+        Args:
+            request_id: Unique request identifier
+            method: HTTP method
+            path: Request path
+            error_type: Type of error
+            error_message: Error message
+            user_agent: User agent string
+            client_ip: Client IP address
+            error_data: Full error data
+            
+        Returns:
+            Logging result dictionary
+        """
+        try:
+            # Ensure log group exists
+            await self._ensure_log_group_exists(self.api_log_group)
+            
+            # Create log stream name
+            log_stream = f"{self.api_log_stream_prefix}-{datetime.now().strftime('%Y-%m-%d')}"
+            await self._ensure_log_stream_exists(self.api_log_group, log_stream)
+            
+            # Prepare log message
+            log_message = {
+                "event_type": "api_error",
+                "request_id": request_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "method": method,
+                "path": path,
+                "error_type": error_type,
+                "error_message": error_message,
+                "user_agent": user_agent,
+                "client_ip": client_ip,
+                "error_data": error_data
+            }
+            
+            # Put log event
+            self.logs_client.put_log_events(
+                logGroupName=self.api_log_group,
+                logStreamName=log_stream,
+                logEvents=[{
+                    'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'message': json.dumps(log_message, default=str)
+                }]
+            )
+            
+            # Put error metric
+            await self.put_api_metric("api_errors", 1, method=method, path=path, error_type=error_type)
+            
+            return {
+                'success': True,
+                'request_id': request_id,
+                'log_group': self.api_log_group,
+                'log_stream': log_stream
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to log API error: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def put_api_metric(
+        self,
+        metric_name: str,
+        value: float,
+        method: Optional[str] = None,
+        path: Optional[str] = None,
+        status_code: Optional[int] = None,
+        error_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Put API-related metric to CloudWatch.
+        
+        Args:
+            metric_name: Name of the metric
+            value: Metric value
+            method: HTTP method
+            path: Request path
+            status_code: Response status code
+            error_type: Type of error
+            
+        Returns:
+            Metric put result dictionary
+        """
+        try:
+            dimensions = []
+            
+            if method:
+                dimensions.append({'Name': 'Method', 'Value': method})
+            
+            if path:
+                # Truncate path if too long
+                path_dimension = path[:50] + "..." if len(path) > 50 else path
+                dimensions.append({'Name': 'Path', 'Value': path_dimension})
+            
+            if status_code:
+                dimensions.append({'Name': 'StatusCode', 'Value': str(status_code)})
+            
+            if error_type:
+                dimensions.append({'Name': 'ErrorType', 'Value': error_type})
+            
+            self.cloudwatch_client.put_metric_data(
+                Namespace='ThreatIntelligence/API',
+                MetricData=[{
+                    'MetricName': metric_name,
+                    'Value': value,
+                    'Unit': 'Count' if metric_name in ['api_requests', 'api_responses', 'api_errors'] else 'Milliseconds',
+                    'Timestamp': datetime.now(timezone.utc),
+                    'Dimensions': dimensions
+                }]
+            )
+            
+            return {
+                'success': True,
+                'metric_name': metric_name,
+                'value': value,
+                'dimensions': dimensions
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to put API metric: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    async def _ensure_log_group_exists(self, log_group_name: str) -> None:
+        """Ensure CloudWatch log group exists"""
+        try:
+            self.logs_client.describe_log_groups(logGroupNamePrefix=log_group_name)
+        except ClientError:
+            # Create log group if it doesn't exist
+            self.logs_client.create_log_group(logGroupName=log_group_name)
+            logger.info(f"Created CloudWatch log group: {log_group_name}")
+    
+    async def _ensure_log_stream_exists(self, log_group_name: str, log_stream_name: str) -> None:
+        """Ensure CloudWatch log stream exists"""
+        try:
+            self.logs_client.describe_log_streams(
+                logGroupName=log_group_name,
+                logStreamNamePrefix=log_stream_name
+            )
+        except ClientError:
+            # Create log stream if it doesn't exist
+            self.logs_client.create_log_stream(
+                logGroupName=log_group_name,
+                logStreamName=log_stream_name
+            )
+            logger.info(f"Created CloudWatch log stream: {log_stream_name}")
     
     def put_metric(
         self,
