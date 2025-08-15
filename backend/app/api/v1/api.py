@@ -11,7 +11,8 @@ from app.api.v1.endpoints import (
     organizations,
     analytics,
     ml,
-    rbac
+    rbac,
+    logs
 )
 
 api_router = APIRouter()
@@ -27,4 +28,5 @@ api_router.include_router(incidents.router, prefix="/incidents", tags=["incident
 api_router.include_router(organizations.router, prefix="/organizations", tags=["organization-management"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 api_router.include_router(ml.router, prefix="/ml", tags=["machine-learning"])
-api_router.include_router(rbac.router, prefix="/rbac", tags=["rbac-management"]) 
+api_router.include_router(rbac.router, prefix="/rbac", tags=["rbac-management"])
+api_router.include_router(logs.router, prefix="/logs", tags=["api-logs"]) 
